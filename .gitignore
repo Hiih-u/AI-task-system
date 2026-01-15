@@ -1,0 +1,25 @@
+# Python 编译文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境 (非常重要，不要提交 venv)
+venv/
+.venv/
+env/
+
+# 环境变量与密钥 (保护安全)
+.env
+.env.local
+
+# IDE 配置 (如果你不想共享 IDE 设置)
+.idea/
+.vscode/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 数据库文件 (如果是本地 SQLite 或调试用的)
+*.sqlite3
+*.db
