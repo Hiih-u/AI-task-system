@@ -100,7 +100,7 @@ python init/init_db.py
 
 ```bash
 # 默认运行在 http://127.0.0.1:8000
-python api-gateway/main.py
+python api-gateway/server.py
 
 ```
 
