@@ -14,7 +14,7 @@ class Conversation(Base):
     __tablename__ = "ai_conversations"
 
     conversation_id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
-    title = Column(String, nullable=True)  # 可选：会话标题
+    title = Column(String, nullable=True)
 
     # 关键字段：存储下游 Worker 需要的会话状态 (如 Gemini 的 metadata, history tokens)
     # 对应 server.py 中的 chat.metadata
