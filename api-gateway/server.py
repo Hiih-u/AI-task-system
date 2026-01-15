@@ -56,7 +56,7 @@ def create_generation_task(request: schemas.GenerateRequest, db: Session = Depen
     else:
         # 创建新会话
         conversation = models.Conversation(
-            title=request.prompt[:30],  # 简单的取标题策略
+            title=request.prompt[:30],
             session_metadata={}  # 初始为空，由 Worker 填充
         )
         db.add(conversation)
