@@ -1,5 +1,7 @@
 # main.py
 import json
+import os
+from dotenv import load_dotenv
 import redis
 import uuid
 from fastapi import FastAPI, Depends, HTTPException
@@ -7,13 +9,15 @@ from sqlalchemy.orm import Session
 from shared import models, schemas, database
 from shared.database import engine, get_db
 
-# 初始化数据库
-models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Gemini Async API")
+load_dotenv()
+app = FastAPI(title="AI Async API")
+
+REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
 # 连接 Redis
-redis_client = redis.Redis(host='127.0.0.1', port=6379, db=0)
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
 
 # 路由分发逻辑：根据 model 名称决定推送到哪个队列

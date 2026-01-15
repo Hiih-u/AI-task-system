@@ -3,7 +3,7 @@ from sqlalchemy import Column, String, DateTime, Text, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
-from database import Base
+from shared.database import Base
 
 
 class Conversation(Base):
@@ -11,7 +11,7 @@ class Conversation(Base):
     新增：会话表
     用于存储对话的上下文状态，实现对话复用
     """
-    __tablename__ = "conversations"
+    __tablename__ = "ai_conversations"
 
     conversation_id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
     title = Column(String, nullable=True)  # 可选：会话标题
@@ -31,7 +31,7 @@ class Task(Base):
     __tablename__ = "ai_tasks"
 
     task_id = Column(String, primary_key=True, index=True, default=lambda: str(uuid.uuid4()))
-    conversation_id = Column(String, ForeignKey("conversations.conversation_id"), nullable=True)
+    conversation_id = Column(String, ForeignKey("ai_conversations.conversation_id"), nullable=True)
 
     # === 新增字段 ===
     task_type = Column(String, default="IMAGE")  # 枚举: "IMAGE" 或 "TEXT"
