@@ -107,7 +107,7 @@ python api-gateway/server.py
 或者使用 uvicorn 命令：
 
 ```bash
-uvicorn api-gateway.main:app --reload
+uvicorn api-gateway.server:app --reload
 
 ```
 
