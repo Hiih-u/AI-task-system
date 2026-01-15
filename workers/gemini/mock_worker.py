@@ -14,7 +14,6 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
 # 定义需要监听的所有队列列表
-# main.py 中用到了: 'gemini_tasks', 'sd_tasks', 'deepseek_tasks', 'image_tasks'
 LISTEN_QUEUES = ["gemini_tasks", "sd_tasks", "deepseek_tasks", "image_tasks"]
 
 
