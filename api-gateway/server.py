@@ -1,6 +1,9 @@
 # server.py
 import json
 import os
+from datetime import datetime
+from logging import DEBUG
+
 from dotenv import load_dotenv
 import redis
 from fastapi import FastAPI, Depends, HTTPException
@@ -18,6 +21,17 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 # 连接 Redis
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
+def debug_log(message: str, level: str = "INFO"):
+    """统一的 debug 日志输出"""
+    if DEBUG:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        emoji_map = {
+            "INFO": "ℹ️", "SUCCESS": "✅", "ERROR": "❌",
+            "WARNING": "⚠️", "DEBUG": "🔍", "REQUEST": "📝",
+            "RESPONSE": "📤", "IMAGE": "🖼️", "FILE": "📎", "CHAT": "💬"
+        }
+        emoji = emoji_map.get(level, "•")
+        print(f"[{timestamp}] {emoji} {message}")
 
 def dispatch_task(task_data: dict):
     """
@@ -71,20 +85,14 @@ def get_task_status(task_id: str, db: Session = Depends(get_db)):
         异常:
             HTTP 404: 任务不存在
         """
+    debug_log(f"查询任务状态: {task_id}", "REQUEST")
     task = db.query(models.Task).filter(models.Task.task_id == task_id).first()
     if not task:
+        debug_log(f"任务未找到: {task_id}", "WARNING")
         raise HTTPException(status_code=404, detail="Task not found")
 
-    return {
-        "task_id": task.task_id,
-        "conversation_id": task.conversation_id,
-        "status": task.status,
-        "task_type": task.task_type,
-        "prompt": task.prompt,
-        "created_at": task.created_at,
-        "response_text": task.response_text,
-        "model": task.model_name
-    }
+    debug_log(f"任务 {task_id} 状态: {task.status}", "INFO")
+    return task
 
 # --- 接口 : 获取会话历史 ---
 @app.get("/v1/conversations/{conversation_id}/history")
@@ -109,11 +117,13 @@ def get_conversation_history(conversation_id: str, db: Session = Depends(get_db)
         """
     """获取某个会话的所有任务历史"""
     # 1. 查询任务，按时间正序排列
+    debug_log(f"获取会话历史: {conversation_id}", "CHAT")
     tasks = db.query(models.Task).filter(
         models.Task.conversation_id == conversation_id
     ).order_by(models.Task.created_at.asc()).all()
 
     if not tasks:
+        debug_log(f"会话不存在: {conversation_id}", "WARNING")
         raise HTTPException(status_code=404, detail="Conversation not found")
 
     messages = []
@@ -148,6 +158,7 @@ def get_conversation_history(conversation_id: str, db: Session = Depends(get_db)
 
             messages.append(assistant_msg)
 
+    debug_log(f"返回历史记录: {len(messages)} 条消息", "SUCCESS")
     return {"conversation_id": conversation_id, "messages": messages}
 
 
@@ -160,6 +171,10 @@ def create_chat_task(request: schemas.ChatRequest, db: Session = Depends(get_db)
         无论用户是想聊天还是画图，都通过此接口提交。
         Gemini 会根据 prompt 内容自动决定输出文本还是图片。
     """
+    debug_log("=" * 40, "REQUEST")
+    debug_log(f"收到对话请求 | 模型: {request.model}", "REQUEST")
+    debug_log(f"Prompt: {request.prompt[:50]}...", "REQUEST")
+
     # 1. 处理会话 (逻辑同上，复用或新建)
     conversation = _get_or_create_conversation(db, request.conversation_id, request.prompt)
 
@@ -186,7 +201,8 @@ def create_chat_task(request: schemas.ChatRequest, db: Session = Depends(get_db)
     }
     # 推送到同一个队列，或者分开的 "text_tasks" 队列均可
     target_queue = dispatch_task(task_payload)
-    print(f"任务已分发至: {target_queue}")
+    debug_log(f"任务 {new_task.task_id} 已分发至队列: {target_queue}", "SUCCESS")
+    debug_log("=" * 40, "REQUEST")
 
     return {
         "message": "对话请求已入队",
@@ -219,4 +235,5 @@ def _get_or_create_conversation(db, conversation_id, prompt):
 if __name__ == "__main__":
     import uvicorn
 
+    debug_log("🚀 启动 API Gateway...", "INFO")
     uvicorn.run(app, host="127.0.0.1", port=8000)

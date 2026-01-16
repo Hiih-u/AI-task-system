@@ -1,5 +1,5 @@
 # models.py
-from sqlalchemy import Column, String, DateTime, Text, ForeignKey, JSON
+from sqlalchemy import Column, String, DateTime, Text, ForeignKey, JSON, Float
 from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
@@ -40,10 +40,15 @@ class Task(Base):
 
     status = Column(String, default="PENDING")
     prompt = Column(Text)
+
+    @property
+    def model(self):
+        return self.model_name
     model_name = Column(String)
 
     role = Column(String, default="user")
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+    cost_time = Column(Float, nullable=True)
 
     conversation = relationship("Conversation", back_populates="tasks")
