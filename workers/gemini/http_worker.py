@@ -15,7 +15,7 @@ REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
 # 指向你的 Gemini Service (就是你上传的 server.py 运行的服务)
 # 假设它运行在 localhost:8000
-GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://192.168.202.155:61028/v1/chat/completions")
+GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://localhost:61080/v1/chat/completions")
 
 redis = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
