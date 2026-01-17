@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any
 
 class TaskSubmitResponse(BaseModel):
     task_id: str
-    status: str
+    status: int
     conversation_id: str  # 返回会话ID，方便前端下次使用
     message: str = "请求成功"
 
@@ -13,7 +13,7 @@ class TaskSubmitResponse(BaseModel):
 class TaskQueryResponse(BaseModel):
     task_id: str
     conversation_id: Optional[str]
-    status: str
+    status: int
     task_type: str  # 新增：让前端知道是文本还是图片
     prompt: str
     created_at: datetime

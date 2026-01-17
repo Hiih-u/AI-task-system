@@ -8,6 +8,7 @@ import os
 import time
 from sqlalchemy.orm import Session
 from shared import models, database
+from shared.models import TaskStatus
 
 # 配置
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
@@ -82,7 +83,7 @@ def process_tasks():
                     task_record = db.query(models.Task).filter(models.Task.task_id == task_id).first()
                     if task_record:
                         task_record.response_text = ai_text
-                        task_record.status = "SUCCESS"
+                        task_record.status = TaskStatus.SUCCESS
                         task_record.cost_time = round(time.time() - start_time, 2)
 
                         # 更新会话最后活跃时间
@@ -118,7 +119,7 @@ def _mark_failed(db, task_id, msg):
     try:
         task = db.query(models.Task).filter(models.Task.task_id == task_id).first()
         if task:
-            task.status = "FAILED"
+            task.status = TaskStatus.FAILED
             task.error_msg = msg
             db.commit()
             debug_log(f"任务 {task_id} 已标记为失败", "WARNING")

@@ -31,6 +31,13 @@ def init_models():
     print(f"🔌 正在连接数据库: {engine.url.render_as_string(hide_password=True)}")
     print("🛠️  正在检查表结构...")
 
+    # ⚠️ 警告：这会清空所有数据！仅在开发初期使用
+    print("🗑️  正在删除旧表 (Drop All)...")
+    Base.metadata.drop_all(bind=engine)
+
+    print("🛠️  正在创建新表 (Create All)...")
+    Base.metadata.create_all(bind=engine)
+
     # 创建表
     Base.metadata.create_all(bind=engine)
 

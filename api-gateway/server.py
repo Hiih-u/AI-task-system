@@ -10,6 +10,7 @@ from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
 from shared import models, schemas, database
 from shared.database import engine, get_db
+from shared.models import TaskStatus
 
 
 load_dotenv()
@@ -148,9 +149,9 @@ def get_conversation_history(conversation_id: str, db: Session = Depends(get_db)
 
             # 核心修正：无论图片还是文本，内容都存在 response_text 字段里
             # Gemini 返回的图片通常是 Markdown 格式： "Here is the image:\n![img](url)"
-            if t.status == "SUCCESS":
+            if t.status == TaskStatus.SUCCESS:
                 assistant_msg["content"] = t.response_text
-            elif t.status == "FAILED":
+            elif t.status == TaskStatus.FAILED:
                 assistant_msg["content"] = f"任务失败: {t.error_msg}"
             else:
                 # PENDING 状态
@@ -182,9 +183,9 @@ def create_chat_task(request: schemas.ChatRequest, db: Session = Depends(get_db)
     new_task = models.Task(
         prompt=request.prompt,
         model_name=request.model,
-        status="PENDING",
+        status=0,
         conversation_id=conversation.conversation_id,
-        task_type="TEXT",  # <--- 标记类型
+        task_type="TEXT",
         role="user"
     )
     db.add(new_task)
