@@ -37,36 +37,34 @@ def debug_log(message: str, level: str = "INFO"):
 
 def dispatch_task(task_data: dict):
     """
-        任务分发路由函数：根据模型名称将任务推送到对应的Redis队列
-
-        参数:
-            task_data (dict): 任务数据字典，包含model字段
-
-        返回:
-            str: 任务被推送到的队列名称
-
-        路由逻辑:
-            - gemini相关模型 -> gemini_tasks队列
-            - stable diffusion相关模型 -> sd_tasks队列
-            - deepseek相关模型 -> deepseek_tasks队列
-            - 其他模型 -> 默认使用gemini_tasks队列
-        """
+    任务分发：使用 Redis Stream (XADD)
+    """
     model_name = task_data.get("model", "").lower()
 
+    # 1. 确定 Stream 名称 (跟之前的队列名逻辑保持一致)
     if "gemini" in model_name:
-        queue_name = "gemini_tasks"
+        stream_key = "gemini_stream"  # 改个名字区分一下，叫 stream 更直观
     elif "sd" in model_name or "stable" in model_name:
-        queue_name = "sd_tasks"
+        stream_key = "sd_stream"
     elif "deepseek" in model_name:
-        queue_name = "deepseek_tasks"
+        stream_key = "deepseek_stream"
     else:
-        # 默认队列
-        queue_name = "gemini_tasks"
+        stream_key = "gemini_stream"
 
-    # 将任务数据序列化为JSON并推送到对应队列
-    redis_client.rpush(queue_name, json.dumps(task_data))
-    return queue_name
+    # 2. 推送到 Stream
+    # xadd(stream_name, fields)
+    # maxlen=10000 表示限制流的最大长度，防止 Redis 内存爆满
+    try:
+        redis_client.xadd(
+            stream_key,
+            {"payload": json.dumps(task_data)}, # 把数据包在一个字段里
+            maxlen=10000
+        )
+    except Exception as e:
+        debug_log(f"Redis XADD 失败: {e}", "ERROR")
+        raise e
 
+    return stream_key
 
 # --- 接口 : 查询任务状态 ---
 @app.get("/v1/tasks/{task_id}", response_model=schemas.TaskQueryResponse)
