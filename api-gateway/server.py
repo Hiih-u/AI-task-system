@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from shared import models, schemas, database
 from shared.database import engine, get_db
 from shared.models import TaskStatus
+from shared.utils import log_error
 
 
 load_dotenv()
@@ -172,45 +173,75 @@ def create_chat_task(request: schemas.ChatRequest, db: Session = Depends(get_db)
         无论用户是想聊天还是画图，都通过此接口提交。
         Gemini 会根据 prompt 内容自动决定输出文本还是图片。
     """
-    debug_log("=" * 40, "REQUEST")
-    debug_log(f"收到对话请求 | 模型: {request.model}", "REQUEST")
-    debug_log(f"Prompt: {request.prompt[:50]}...", "REQUEST")
+    # 使用 try-except 包裹整个业务逻辑
+    try:
+        debug_log("=" * 40, "REQUEST")
+        debug_log(f"收到对话请求 | 模型: {request.model}", "REQUEST")
 
-    # 1. 处理会话 (逻辑同上，复用或新建)
-    conversation = _get_or_create_conversation(db, request.conversation_id, request.prompt)
+        # 1. 处理会话
+        conversation = _get_or_create_conversation(db, request.conversation_id, request.prompt)
 
-    # 2. 创建任务：标记为 TEXT
-    new_task = models.Task(
-        prompt=request.prompt,
-        model_name=request.model,
-        status=0,
-        conversation_id=conversation.conversation_id,
-        task_type="TEXT",
-        role="user"
-    )
-    db.add(new_task)
-    db.commit()
-    db.refresh(new_task)
+        # 2. 创建任务
+        new_task = models.Task(
+            prompt=request.prompt,
+            model_name=request.model,
+            status=0,  # PENDING
+            conversation_id=conversation.conversation_id,
+            task_type="TEXT",
+            role="user"
+        )
+        db.add(new_task)
+        db.commit()
+        db.refresh(new_task)
 
-    # 3. 推送 Redis
-    task_payload = {
-        "task_id": new_task.task_id,
-        "conversation_id": conversation.conversation_id,
-        "type": "TEXT",
-        "prompt": new_task.prompt,
-        "model": new_task.model_name
-    }
-    # 推送到同一个队列，或者分开的 "text_tasks" 队列均可
-    target_queue = dispatch_task(task_payload)
-    debug_log(f"任务 {new_task.task_id} 已分发至队列: {target_queue}", "SUCCESS")
-    debug_log("=" * 40, "REQUEST")
+        # 3. 推送 Redis
+        task_payload = {
+            "task_id": new_task.task_id,
+            "conversation_id": conversation.conversation_id,
+            "type": "TEXT",
+            "prompt": new_task.prompt,
+            "model": new_task.model_name
+        }
 
-    return {
-        "message": "对话请求已入队",
-        "task_id": new_task.task_id,
-        "conversation_id": conversation.conversation_id,
-        "status": new_task.status
-    }
+        # 这里也是容易出错的地方（Redis 连接失败）
+        try:
+            target_queue = dispatch_task(task_payload)
+            debug_log(f"任务 {new_task.task_id} 已分发至队列: {target_queue}", "SUCCESS")
+        except Exception as e_redis:
+            # 如果推送到 Redis 失败，记录严重错误
+            log_error(
+                source="API-Gateway",
+                message=f"Redis 推送失败: {str(e_redis)}",
+                task_id=new_task.task_id,
+                error=e_redis
+            )
+            # 可以在这里选择是否回滚数据库，或者将任务标记为 FAILED
+            new_task.status = TaskStatus.FAILED
+            new_task.error_msg = "系统繁忙 (Queue Error)"
+            db.commit()
+            raise HTTPException(status_code=500, detail="任务入队失败，请联系管理员")
+
+        debug_log("=" * 40, "REQUEST")
+
+        return {
+            "message": "对话请求已入队",
+            "task_id": new_task.task_id,
+            "conversation_id": conversation.conversation_id,
+            "status": new_task.status
+        }
+
+    except HTTPException:
+        raise  # 如果是我们自己抛出的 HTTPException，直接透传
+    except Exception as e:
+        # ✅ 捕获所有未知的 API 错误
+        log_error(
+            source="API-Gateway",
+            message="创建对话任务时发生未处理异常",
+            task_id=None,
+            error=e
+        )
+        # 告诉前端服务器出错了，而不是直接崩溃
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 # 辅助函数：复用会话逻辑

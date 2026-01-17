@@ -9,6 +9,7 @@ import time
 from sqlalchemy.orm import Session
 from shared import models, database
 from shared.models import TaskStatus
+from shared.utils import log_error
 
 # 配置
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
@@ -46,9 +47,20 @@ def process_tasks():
                 continue
 
             queue, data = result
-            task_data = json.loads(data)
+            try:
+                task_data = json.loads(data)
+            except (json.JSONDecodeError, UnicodeDecodeError) as e:
+                # ✅ 同时捕获 "格式错误" 和 "编码错误"
+                error_msg = f"Redis 数据异常 (无法解析): {data}"
+                debug_log(error_msg, "ERROR")
+                log_error("Worker-Gemini", error_msg, None, e)
+                continue  # 跳过这条脏数据，处理下一条
 
-            task_id = task_data['task_id']
+            task_id = task_data.get('task_id')
+            if not task_id:
+                log_error("Worker-Gemini", f"任务缺少 task_id: {data}")
+                continue
+
             conversation_id = task_data['conversation_id']
             prompt = task_data['prompt']
             model = task_data['model']
@@ -97,22 +109,31 @@ def process_tasks():
                 else:
                     # 处理 API 报错
                     error_detail = response.text
-                    debug_log(f"Gemini Service 报错: {response.status_code}", "ERROR")
-                    debug_log(f"详情: {error_detail}", "ERROR")
-                    _mark_failed(db, task_id, f"Service Error: {response.status_code}")
+                    error_msg = f"Gemini Service Error: {response.status_code}"
+                    debug_log(error_msg, "ERROR")
+                    log_error(
+                        source="Worker-Gemini",
+                        message=f"API调用失败: {error_detail[:200]}...",  # 截取一部分防止太长
+                        task_id=task_id,
+                        error=Exception(f"HTTP {response.status_code}: {error_detail}")
+                    )
+                    _mark_failed(db, task_id, error_msg)
 
             except requests.exceptions.RequestException as e:
                 debug_log(f"连接 Gemini Service 失败: {e}", "ERROR")
+                log_error("Worker-Gemini", "无法连接下游服务", task_id, e)
                 _mark_failed(db, task_id, "Service Unreachable")
             except Exception as e:
                 debug_log(f"Worker 内部错误: {e}", "ERROR")
+                log_error("Worker-Gemini", "Worker 内部逻辑异常", task_id, e)
                 _mark_failed(db, task_id, str(e))
             finally:
                 db.close()
 
         except Exception as e:
             debug_log(f"Redis 循环错误: {e}", "ERROR")
-            time.sleep(5)
+            log_error("Worker-Loop", "Redis 监听循环异常", None, e)
+            time.sleep(5)  # 防止死循环刷屏
 
 
 def _mark_failed(db, task_id, msg):
@@ -123,8 +144,9 @@ def _mark_failed(db, task_id, msg):
             task.error_msg = msg
             db.commit()
             debug_log(f"任务 {task_id} 已标记为失败", "WARNING")
-    except:
+    except Exception as e:
         db.rollback()
+        print(f"⚠️ 致命错误：无法更新任务失败状态! {e}")
 
 
 if __name__ == "__main__":
