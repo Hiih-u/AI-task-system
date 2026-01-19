@@ -1,34 +1,49 @@
 # 🚀 AI Task System (Async + Redis Streams)
 
-这是一个基于 FastAPI 和 Redis Streams 构建的高性能异步 AI 任务处理系统。它旨在将前端的同步等待解耦，支持高并发的任务分发，并通过持久化存储管理会话历史与任务状态。
+这是一个基于 **FastAPI** 和 **Redis Streams** 构建的企业级异步 AI 任务处理系统。它将前端的同步等待解耦，支持高并发的任务分发，并通过 Consumer Group 模式实现可靠的消息处理与故障恢复。
 
-## ✨ 核心特性
+## 🌟 核心特性
 
-* **⚡ 异步流式架构**：采用 **Redis Streams** 替代传统的 List 队列，支持消费者组（Consumer Groups）模式，确保消息不丢失，并具备 **ACK 确认机制**与**崩溃恢复（Crash Recovery）**能力。
-* **🔄 统一接口路由**：通过 `/v1/chat/completions` 统一入口，根据模型名称（如 `gemini-pro`, `stable-diffusion`）自动将任务路由到对应的 Redis Stream (`gemini_stream`, `sd_stream`, etc.)。
-* **💬 会话上下文管理**：内置 `Conversation` 模型，支持基于 `conversation_id` 的多轮对话历史记录查询与自动更新活跃时间。
-* **🛡️ 健壮的错误追踪**：集成了 `SystemLog` 机制，自动将 Worker 或 API 的异常堆栈（Stack Trace）记录到数据库，便于排查生产环境问题。
+* **⚡ 异步流式架构**：采用 **Redis Streams** 替代传统 List 队列，支持多消费者组（Consumer Groups），确保高吞吐量与消息不丢失。
+* **🔄 智能模型路由**：
+* `api-gateway` 根据请求中的 `model` 字段自动分发任务到不同的 Stream：
+* `gemini-*` → **`gemini_stream`**
+* `deepseek-*` → **`deepseek_stream`** (New!)
+* `sd-*` / `stable-*` → **`sd_stream`**
+
+
+
+
+* **🛡️ 健壮的可靠性设计**：
+* **崩溃恢复 (Crash Recovery)**：Worker 启动及心跳检测时，会自动扫描 PEL (Pending Entries List)，重新处理那些“已认领但未确认”的旧任务。
+* **幂等性检查 (Idempotency)**：在处理消息前会检查数据库状态，防止因重复消费导致的任务重复执行。
+
+
+* **📊 完整的日志与追踪**：
+* **SystemLog**：自动捕获异常堆栈 (Stack Trace) 并持久化到 PostgreSQL，支持通过 `.env` 开关控制。
+* **Conversation Context**：内置会话管理，支持存储和查询多轮对话历史。
+
+
 
 ## 📂 项目结构
 
 ```text
 ai-task-system/
 ├── api-gateway/
-│   ├── Dockerfile           # API 服务容器构建文件
-│   ├── server.py            # FastAPI 入口：接收请求 -> 推送 Redis Stream
+│   ├── Dockerfile           # API 服务容器构建
+│   ├── server.py            # FastAPI 入口：任务分发与路由逻辑
 │   └── main.py              # (可选入口)
-├── init/
-│   └── init_db.py           # 数据库初始化脚本（自动建表）
-├── shared/                  # 核心共享模块
-│   ├── database.py          # PostgreSQL 连接池与 Session 管理
-│   ├── models.py            # SQLAlchemy ORM 模型 (Task, Conversation, SystemLog)
-│   ├── schemas.py           # Pydantic 响应/请求模型
-│   └── utils.py             # 通用工具 (如 log_error 数据库日志记录)
 ├── workers/
 │   └── gemini/
-│       └── http_worker.py   # 真实 Worker：监听 Stream -> 调用下游 AI 服务 -> 写回 DB
+│       └── http_worker.py   # 核心 Worker：消费 Stream -> 幂等检查 -> 调用 AI -> 落库 -> ACK
+├── shared/                  # 共享模块
+│   ├── database.py          # 数据库连接池与 Session 管理
+│   ├── models.py            # ORM 模型: Task, Conversation, SystemLog
+│   ├── schemas.py           # Pydantic 数据验证模型
+│   └── utils.py             # 通用工具 (含数据库日志记录器)
+├── init/
+│   └── init_db.py           # ⚠️ 数据库初始化脚本 (自动建表)
 ├── .env                     # 环境变量配置
-├── .gitignore               # Git 忽略配置
 ├── requirements.txt         # 项目依赖
 └── README.md                # 项目文档
 
@@ -38,19 +53,18 @@ ai-task-system/
 
 * **Web 框架**: FastAPI (Python 3.10+)
 * **数据库**: PostgreSQL (SQLAlchemy ORM + Psycopg2)
-* **消息中间件**: Redis (Streams + Consumer Groups)
-* **容器化**: Docker
-* **依赖管理**: Pydantic v2, Uvicorn
+* **消息队列**: Redis Streams (5.0+)
+* **依赖管理**: Pydantic v2, Uvicorn, Requests
 
 ## ⚙️ 快速开始
 
 ### 1. 环境准备
 
-确保本地或服务器已安装 PostgreSQL 和 Redis。
+确保本地已安装 PostgreSQL 和 Redis。
 
 ```bash
-# 1. 克隆项目
-git clone <your-repo-url>
+# 1. 克隆项目 & 进入目录
+git clone https://github.com/Hiih-u/AI-task-system.git
 cd ai-task-system
 
 # 2. 创建并激活虚拟环境
@@ -65,10 +79,10 @@ pip install -r requirements.txt
 
 ### 2. 配置文件 (.env)
 
-在项目根目录创建 `.env` 文件，填入你的配置信息：
+在项目根目录创建 `.env` 文件，根据实际环境修改配置。
 
 ```ini
-# --- 数据库配置 (PostgreSQL) ---
+# --- 数据库配置 ---
 DB_HOST=127.0.0.1
 DB_PORT=5432
 POSTGRES_DB=gemini
@@ -80,16 +94,22 @@ REDIS_HOST=127.0.0.1
 REDIS_PORT=6379
 
 # --- Worker 配置 ---
-# 下游真实 AI 服务的地址 (Worker 会将请求转发到这里)
+# 下游真实 AI 服务地址 (Worker 会透传请求)
 GEMINI_SERVICE_URL=http://localhost:61080/v1/chat/completions
+
 # Worker 身份标识 (用于 Redis Consumer Group 区分消费者)
 WORKER_ID=gemini-worker-01
+
+# --- 日志配置 ---
+# True: 开启数据库错误日志记录 (开发调试推荐)
+# False: 仅控制台输出 (生产环境推荐，减少数据库压力)
+ENABLE_DB_LOG=True
 
 ```
 
 ### 3. 初始化数据库
 
-首次运行前，执行初始化脚本创建表结构 (`ai_tasks`, `ai_conversations`, `sys_logs`)：
+⚠️ **警告**：此脚本会执行 `DROP ALL`，清空现有数据库表结构和数据！仅在首次部署或重置环境时使用。
 
 ```bash
 python init/init_db.py
@@ -100,41 +120,40 @@ python init/init_db.py
 
 ## 🚀 启动服务
 
-建议开启两个终端窗口，分别运行 API 服务和 Worker。
+建议开启两个终端窗口分别运行组件。
 
 ### 终端 1：启动 API Gateway
 
-```bash
-# 开发模式
-uvicorn api-gateway.server:app --reload --host 0.0.0.0 --port 8000
+API 服务默认运行在 8000 端口，提供 Swagger 文档。
 
-# 或直接运行脚本
-python api-gateway/server.py
+```bash
+# 开发模式 (支持热重载)
+uvicorn api-gateway.server:app --reload --host 0.0.0.0 --port 8000
 
 ```
 
-### 终端 2：启动 Gemini Worker
+### 终端 2：启动 Worker
 
-该 Worker 会加入 Redis 的消费者组，监听任务并调用配置的 `GEMINI_SERVICE_URL`。
+Worker 启动后会自动加入 `gemini_workers_group` 消费者组，并开始处理任务。
 
 ```bash
 python workers/gemini/http_worker.py
 
 ```
 
+*启动成功后你将看到 `🚀 Stream Worker 启动` 以及 `♻️ 发现 x 个挂起任务` 的日志。*
+
 ## 🔌 API 接口说明
 
-访问 Swagger 文档：`http://127.0.0.1:8000/docs`
+完整文档请访问 Swagger UI: `http://127.0.0.1:8000/docs`
 
-### 1. 统一对话/任务入口
-
-支持文本对话或触发其他模态任务，系统根据 `model` 字段自动分发。
+### 1. 提交对话任务
 
 * **URL**: `POST /v1/chat/completions`
-* **Request Body**:
+* **Body**:
 ```json
 {
-  "prompt": "如何用 Python 读取 CSV 文件？",
+  "prompt": "如何用 Python 读取 CSV？",
   "model": "gemini-2.5-flash", 
   "conversation_id": null 
 }
@@ -142,13 +161,15 @@ python workers/gemini/http_worker.py
 ```
 
 
-*说明：如果不传 `conversation_id`，系统会新建会话并返回 ID；如果传入模型名包含 `sd` 或 `stable`，任务会被分发到 `sd_stream` 队列。*
+> **Tip**: 如果 `model` 包含 "deepseek"，任务会自动路由到 `deepseek_stream`；如果包含 "sd" 或 "stable"，则路由到 `sd_stream`。
+
+
 * **Response**:
 ```json
 {
-  "task_id": "uuid-string...",
+  "task_id": "550e8400-e29b...",
   "status": 0,
-  "conversation_id": "uuid-string...",
+  "conversation_id": "c123...",
   "message": "对话请求已入队"
 }
 
@@ -156,9 +177,9 @@ python workers/gemini/http_worker.py
 
 
 
-### 2. 查询任务状态 (轮询)
+### 2. 查询任务结果 (轮询)
 
-前端拿到 `task_id` 后轮询此接口，直到 `status` 变为 1 (SUCCESS) 或 2 (FAILED)。
+前端拿到 `task_id` 后轮询此接口，直到 `status` 变为 `1` (SUCCESS) 或 `2` (FAILED)。
 
 * **URL**: `GET /v1/tasks/{task_id}`
 * **Response**:
@@ -166,9 +187,10 @@ python workers/gemini/http_worker.py
 {
   "task_id": "...",
   "status": 1,
-  "response_text": "这里是 AI 的回复内容...",
-  "cost_time": 2.5,
-  "created_at": "2024-01-01T12:00:00"
+  "task_type": "TEXT",
+  "response_text": "可以使用 pandas 库...",
+  "cost_time": 1.25,
+  "created_at": "2024-03-20T10:00:00"
 }
 
 ```
@@ -181,14 +203,26 @@ python workers/gemini/http_worker.py
 
 * **URL**: `GET /v1/conversations/{conversation_id}/history`
 
-## 🧠 核心机制：Redis Stream 流程
+## 🧠 核心机制详解
 
-1. **生产 (API)**: 用户请求到达 API Gateway -> `server.py` 解析模型名 -> `XADD` 写入对应的 Stream (如 `gemini_stream`)。
-2. **消费 (Worker)**: `http_worker.py` 作为消费者组 (`gemini_workers_group`) 成员，通过 `XREADGROUP` 获取待处理消息。
-3. **处理**: Worker 解析 payload -> 请求下游 `GEMINI_SERVICE_URL` -> 获取结果。
-4. **持久化 & ACK**:
-* **成功**: 将结果更新至 PostgreSQL `ai_tasks` 表，状态置为 `SUCCESS`，并执行 `XACK` 确认消息已消费。
-* **失败**: 记录错误信息至 `sys_logs` 和 `ai_tasks`，视错误类型决定是否 ACK (避免死循环)。
+### 1. 消息生命周期
 
+1. **API** 接收请求 -> 解析 Model -> `XADD` 写入对应 Stream (maxlen~10)。
+2. **Worker** 通过 `XREADGROUP` 抢占消息 (进入 Pending 状态)。
+3. **Worker** 处理业务 -> **更新 DB** -> **XACK** (从 Pending 中移除)。
 
-5. **崩溃恢复**: Worker 启动时会自动检查 Pending List (PEL)，重新处理那些“已认领但未确认（Worker 意外崩溃）”的旧任务。
+### 2. 崩溃恢复流程 (Crash Recovery)
+
+如果 Worker 在 `XACK` 之前崩溃：
+
+* 消息会一直停留在 Redis 的 **PEL (Pending Entries List)** 中。
+* Worker 重启时，或心跳检测 (`recover_pending_tasks`) 触发时，会扫描这些旧消息。
+* **关键机制**：在重试前，Worker 会先查数据库 (`check_idempotency=True`)。如果发现该任务 ID 已经是 `SUCCESS`，则直接补发 `XACK` 而不重复执行 AI 请求。
+
+## ❓ 常见问题
+
+**Q: 为什么 Redis Stream 里的消息数量有时候会超过 10 条？**
+A: 代码中使用了 `maxlen=10`，Redis 默认采用近似修剪 (`~`) 算法。这是为了性能优化，允许流长度在小范围内（如 10-20 条）浮动，属于正常现象。
+
+**Q: 如何横向扩展 Worker？**
+A: 可以在多台机器上启动 `http_worker.py`，只需修改 `.env` 中的 `WORKER_ID` (如 `gemini-worker-02`)，它们会自动加入同一个消费者组，实现负载均衡。
