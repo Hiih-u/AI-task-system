@@ -58,7 +58,7 @@ def dispatch_task(task_data: dict):
         redis_client.xadd(
             stream_key,
             {"payload": json.dumps(task_data)}, # 把数据包在一个字段里
-            maxlen=10000
+            maxlen=10
         )
     except Exception as e:
         debug_log(f"Redis XADD 失败: {e}", "ERROR")

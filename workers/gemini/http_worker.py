@@ -31,7 +31,7 @@ else:
 # --- 配置 ---
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://localhost:61080/v1/chat/completions")
+GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://192.168.202.155:61028/v1/chat/completions")
 DEBUG = True
 
 # --- Redis Stream 配置 ---
