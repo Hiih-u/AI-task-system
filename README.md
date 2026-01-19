@@ -8,7 +8,6 @@
 * **🔄 统一接口路由**：通过 `/v1/chat/completions` 统一入口，根据模型名称（如 `gemini-pro`, `stable-diffusion`）自动将任务路由到对应的 Redis Stream (`gemini_stream`, `sd_stream`, etc.)。
 * **💬 会话上下文管理**：内置 `Conversation` 模型，支持基于 `conversation_id` 的多轮对话历史记录查询与自动更新活跃时间。
 * **🛡️ 健壮的错误追踪**：集成了 `SystemLog` 机制，自动将 Worker 或 API 的异常堆栈（Stack Trace）记录到数据库，便于排查生产环境问题。
-* **🐳 容器化支持**：API Gateway 提供 Dockerfile，支持轻量级部署。
 
 ## 📂 项目结构
 
