@@ -31,12 +31,15 @@ else:
 # --- 2. 全局配置 ---
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://192.168.202.155:61028/v1/chat/completions")
+GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://192.168.202.15:61028/v1/chat/completions")
 DEBUG = True
 
 # Stream 配置
 STREAM_KEY = "gemini_stream"
 GROUP_NAME = "gemini_workers_group"
+
+MAX_RETRIES = 3
+DLQ_STREAM_KEY = "dead_letter_stream"
 
 # Worker 身份标识
 worker_identity = os.getenv("WORKER_ID")
@@ -156,8 +159,9 @@ def process_message(message_id, message_data, check_idempotency=True):
             # 如果你希望它重试，可以注释掉下面这行
             redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
         debug_log(f"脏数据丢弃: {message_id}", "ERROR")
+        send_to_dlq(message_id, message_data, f"Parse Error: {str(e)}")
         redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
     except requests.exceptions.RequestException as e:
@@ -192,13 +196,30 @@ def _mark_failed(db, task_id, msg):
         print(f"严重: 无法更新失败状态 {e}")
 
 
+def send_to_dlq(message_id, message_data, reason):
+    """辅助函数：将消息移入死信队列"""
+    try:
+        # 我们可以把原始消息包一层，加上错误原因和时间
+        # 注意：Redis Stream 的 value 必须是 bytes 或 str
+        dlq_entry = {
+            "original_msg_id": message_id,
+            "failed_reason": reason,
+            "failed_at": str(time.time()),
+            # 保留原始 payload，方便人工排查
+            "payload": message_data.get(b'payload', b'')
+        }
+        redis_client.xadd(DLQ_STREAM_KEY, dlq_entry)
+        debug_log(f"💀 移入死信队列: {message_id} | 原因: {reason}", "WARNING")
+    except Exception as e:
+        debug_log(f"DLQ 写入失败: {e}", "ERROR")
+
+
 def recover_pending_tasks():
     """
-    崩溃恢复 + 心跳检测
-    检查那些 "属于我，但太久没 ACK" 的消息
+    崩溃恢复 + 死信处理逻辑
     """
     try:
-        # id='0' 表示获取所有 Pending 的消息
+        # 获取当前消费者名下的 Pending 消息
         response = redis_client.xreadgroup(
             GROUP_NAME, CONSUMER_NAME, {STREAM_KEY: '0'}, count=10, block=None
         )
@@ -206,11 +227,42 @@ def recover_pending_tasks():
         if response:
             stream_name, messages = response[0]
             if messages:
-                debug_log(f"♻️ 发现 {len(messages)} 个挂起任务，正在恢复...", "WARNING")
+                debug_log(f"♻️  正在检查 {len(messages)} 个挂起任务...", "WARNING")
+
                 for message_id, message_data in messages:
-                    # 🔥 重点：旧任务必须开启幂等性检查 (True)
+                    # [关键步骤 1] 显式 Claim 任务
+                    # 目的：强制增加 Redis 内部的 delivery_count 计数器
+                    # XREADGROUP '0' 本身不会增加计数，必须用 XCLAIM
+                    redis_client.xclaim(
+                        STREAM_KEY, GROUP_NAME, CONSUMER_NAME,
+                        min_idle_time=0, message_ids=[message_id]
+                    )
+
+                    # [关键步骤 2] 查询该消息的详细信息（包含重试次数）
+                    pending_info = redis_client.xpending_range(
+                        STREAM_KEY, GROUP_NAME,
+                        min=message_id, max=message_id, count=1
+                    )
+
+                    # 提取投递次数 (times_delivered)
+                    # pending_info 返回格式: [{'message_id': '...', 'times_delivered': 4, ...}]
+                    current_retry_count = 0
+                    if pending_info:
+                        current_retry_count = pending_info[0].get('times_delivered', 1)
+
+                    # [关键步骤 3] 判断是否超过阈值
+                    if current_retry_count > MAX_RETRIES:
+                        # >>>> 触发死信逻辑 <<<<
+                        send_to_dlq(message_id, message_data, f"Retry limit exceeded ({current_retry_count})")
+
+                        # 必须 ACK 原消息，否则它永远会在 Pending List 里
+                        redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
+                        continue  # 跳过处理，直接看下一条
+
+                    # 如果没超限，正常重试
                     process_message(message_id, message_data, check_idempotency=True)
-                debug_log("✅ 挂起任务处理完毕", "INFO")
+
+                debug_log("✅ 挂起任务检查完毕", "INFO")
     except Exception as e:
         debug_log(f"恢复 Pending 任务失败: {e}", "ERROR")
 
