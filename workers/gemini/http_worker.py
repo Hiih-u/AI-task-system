@@ -5,7 +5,7 @@ import time
 import socket
 from pathlib import Path
 from datetime import datetime
-
+from requests.exceptions import RequestException, Timeout, ConnectTimeout
 import redis
 import requests
 from dotenv import load_dotenv
@@ -30,7 +30,7 @@ else:
 # --- 2. 全局配置 ---
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://192.168.202.155:61028/v1/chat/completions")
+GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://192.168.202.155:61030/v1/chat/completions")
 DEBUG = True
 
 # Stream 配置
@@ -75,9 +75,10 @@ def _mark_failed(db, task_id, msg):
         print(f"严重: 无法更新失败状态 {e}")
 
 
+
 def process_message(message_id, message_data, check_idempotency=True):
     """
-    处理单条消息的核心逻辑 (Fail Fast 模式)
+    处理单条消息的核心逻辑 (优化版：超时熔断 + 软拒绝检测)
     """
     db = database.SessionLocal()
     task_id = "UNKNOWN"
@@ -98,14 +99,12 @@ def process_message(message_id, message_data, check_idempotency=True):
         model = task_data.get('model')
 
         # =========================================================
-        # 🔥 幂等性检查 (Fail Fast 版)
-        # 如果任务已经是 SUCCESS 或 FAILED，说明已经处理过，直接 ACK
+        # 🔥 幂等性检查
         # =========================================================
         if check_idempotency:
             existing_task = db.query(models.Task).filter(models.Task.task_id == task_id).first()
-            # 只要不是 PENDING (0)，说明之前跑过了
             if existing_task and existing_task.status != TaskStatus.PENDING:
-                debug_log(f"♻️ [幂等拦截] 任务 {task_id} 状态为 {existing_task.status}，跳过并补发 ACK", "WARNING")
+                debug_log(f"♻️ [幂等拦截] 任务 {task_id} 已处理，状态: {existing_task.status}", "WARNING")
                 redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
                 return
         # =========================================================
@@ -121,70 +120,111 @@ def process_message(message_id, message_data, check_idempotency=True):
 
         start_time = time.time()
 
-        # Requests 同步调用
+        # =========================================================
+        # ⚡ 优化点 1：超时设置 (timeout=120)
+        # =========================================================
+        # 这里的 timeout=120 会在 2分钟无响应时抛出 requests.exceptions.Timeout
         response = requests.post(GEMINI_SERVICE_URL, json=payload, timeout=120)
 
         if response.status_code == 200:
-            # === 业务成功 ===
+            # === HTTP 成功，但需检查业务内容 ===
             res_json = response.json()
             ai_text = res_json['choices'][0]['message']['content']
 
-            if not existing_task:
-                existing_task = db.query(models.Task).filter(models.Task.task_id == task_id).first()
+            # =========================================================
+            # ⚡ 优化点 2：软拒绝检测 (Soft Rejection)
+            # 检测 Google 是否返回了“未登录/无法生成图片”的拒绝话术
+            # =========================================================
+            refusal_keywords = [
+                "您登录了吗",
+                "无法为您创建任何图片",
+                "地区尚未开通",
+                "无法创建图片",
+                "I cannot create images",
+                "yet available to create images"
+            ]
 
-            if existing_task:
-                existing_task.response_text = ai_text
-                existing_task.status = TaskStatus.SUCCESS
-                existing_task.cost_time = round(time.time() - start_time, 2)
+            # 检查回复中是否包含上述任意关键词
+            is_refusal = any(keyword in ai_text for keyword in refusal_keywords)
 
-                conv = db.query(models.Conversation).filter(
-                    models.Conversation.conversation_id == conversation_id).first()
-                if conv:
-                    conv.updated_at = datetime.now()
+            if is_refusal:
+                # 命中拒绝关键词 -> 视为失败
+                error_msg = f"AI 服务出错了: {ai_text}"
+                debug_log(f"🛑 捕获到软拒绝: {error_msg}", "ERROR")
 
-                db.commit()
-                debug_log(f"任务完成: {task_id} (耗时: {existing_task.cost_time:.2f}s)", "SUCCESS")
+                # 记录详细日志供管理员排查
+                log_error("Worker-Gemini", error_msg, task_id)
 
-            # 成功后 ACK
+                # 标记数据库为 FAILED，并将 AI 的拒绝理由展示给用户
+                _mark_failed(db, task_id, f"图片生成失败: {ai_text}")
+
+            else:
+                # 真正的成功
+                if not existing_task:
+                    existing_task = db.query(models.Task).filter(models.Task.task_id == task_id).first()
+
+                if existing_task:
+                    existing_task.response_text = ai_text
+                    existing_task.status = TaskStatus.SUCCESS
+                    existing_task.cost_time = round(time.time() - start_time, 2)
+
+                    conv = db.query(models.Conversation).filter(
+                        models.Conversation.conversation_id == conversation_id).first()
+                    if conv:
+                        conv.updated_at = datetime.now()
+
+                    db.commit()
+                    debug_log(f"任务完成: {task_id} (耗时: {existing_task.cost_time:.2f}s)", "SUCCESS")
+
+            # 无论成功还是被拦截，都 ACK 掉，避免重复消费
             redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
         else:
-            # === 业务失败 (Fail Fast) ===
-            # 直接报错，不重试，不进死信
+            # === HTTP 状态码错误 (非 200) ===
             error_msg = f"Gemini API Error: {response.status_code} - {response.text[:100]}"
             debug_log(error_msg, "ERROR")
-
             log_error("Worker-Gemini", error_msg, task_id)
             _mark_failed(db, task_id, error_msg)
-
-            # 🔥 关键：ACK 掉，视为处理结束
             redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        # === 脏数据处理 ===
-        # 不再进死信队列，直接丢弃 (ACK)
-        debug_log(f"脏数据丢弃: {message_id} | Error: {str(e)}", "ERROR")
+        debug_log(f"数据解析失败: {e}", "ERROR")
         redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
-    except requests.exceptions.RequestException as e:
-        # === 网络异常 (Fail Fast) ===
-        # 直接报错，ACK 掉，不重试
-        error_msg = f"网络请求失败: {str(e)}"
+    # =========================================================
+    # ⚡ 优化点 3：明确捕获超时异常
+    # =========================================================
+    except ConnectTimeout:
+        error_msg = "无法连接到 AI 服务 (Connection Timeout)。请检查 API 地址或防火墙配置。"
+        debug_log(f"🔌 {error_msg}", "ERROR")
+        log_error("Worker-Gemini", "Connect Timeout", task_id)
+
+        _mark_failed(db, task_id, "系统内部连接异常，请联系管理员")
+        redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
+
+        # 2. 再捕获读取超时 (真正的 >120秒)
+    except Timeout:
+        error_msg = "AI 生成超时（超过 2 分钟无响应），请稍后重试。"
+        debug_log(f"⏳ {error_msg}", "ERROR")
+        log_error("Worker-Gemini", "Read Timeout (>120s)", task_id)
+
+        _mark_failed(db, task_id, error_msg)
+        redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
+
+    except RequestException as e:
+        # 其他网络错误 (连接被拒、DNS解析失败等)
+        error_msg = f"网络连接异常: {str(e)}"
         debug_log(error_msg, "ERROR")
-        log_error("Worker-Gemini", "网络连接异常", task_id, e)
+        log_error("Worker-Gemini", "Network Error", task_id, e)
 
-        # 标记数据库为失败
-        _mark_failed(db, task_id, "后端服务连接超时，请稍后重试")
-
-        # 🔥 关键：ACK 掉
+        _mark_failed(db, task_id, "后端服务连接中断")
         redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
     except Exception as e:
-        # === 代码逻辑崩溃 ===
+        # 代码逻辑崩溃
         debug_log(f"Worker 内部崩溃: {e}", "ERROR")
-        log_error("Worker-Gemini", "未知异常", task_id, e)
-        _mark_failed(db, task_id, f"System Error: {str(e)}")
-        # 防止死循环，遇到未知崩溃也 ACK
+        log_error("Worker-Gemini", "Unknown Exception", task_id, e)
+        _mark_failed(db, task_id, "系统内部处理错误")
         redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
     finally:
