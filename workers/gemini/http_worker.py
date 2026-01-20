@@ -30,7 +30,7 @@ else:
 # --- 2. 全局配置 ---
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://192.168.202.155:61030/v1/chat/completions")
+GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://192.168.202.155:61028/v1/chat/completions")
 DEBUG = True
 
 # Stream 配置
@@ -123,8 +123,16 @@ def process_message(message_id, message_data, check_idempotency=True):
         # =========================================================
         # ⚡ 优化点 1：超时设置 (timeout=120)
         # =========================================================
-        # 这里的 timeout=120 会在 2分钟无响应时抛出 requests.exceptions.Timeout
-        response = requests.post(GEMINI_SERVICE_URL, json=payload, timeout=120)
+        # 1. 构造 Headers
+        # 如果没有 ID (新对话)，就填个默认值，Nginx 会把它分配给任意节点
+        headers = {
+            "Content-Type": "application/json",
+            "X-Conversation-ID": str(conversation_id) if conversation_id else "new-session"
+        }
+
+        # 2. 发送请求时带上 headers
+        debug_log(f"发送请求到 Nginx, Conversation-ID: {headers['X-Conversation-ID']}", "INFO")
+        response = requests.post(GEMINI_SERVICE_URL, json=payload, headers=headers, timeout=120)
 
         if response.status_code == 200:
             # === HTTP 成功，但需检查业务内容 ===
