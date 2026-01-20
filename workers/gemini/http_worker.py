@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 # 导入共享模块
 from shared import models, database
+from shared.database import SessionLocal
 from shared.models import TaskStatus
 from shared.utils import log_error, debug_log
 
@@ -38,7 +39,7 @@ DEBUG = True
 STREAM_KEY = "gemini_stream"
 GROUP_NAME = "gemini_workers_group"
 
-MAX_RETRIES = 3
+MAX_RETRIES = 2
 DLQ_STREAM_KEY = "dead_letter_stream"
 
 # Worker 身份标识
@@ -197,21 +198,44 @@ def _mark_failed(db, task_id, msg):
 
 
 def send_to_dlq(message_id, message_data, reason):
-    """辅助函数：将消息移入死信队列"""
+    """
+    通用死信处理：写 Redis + 尝试更新 DB
+    """
+    # 1. 写 Redis (保留现场)
     try:
-        # 我们可以把原始消息包一层，加上错误原因和时间
-        # 注意：Redis Stream 的 value 必须是 bytes 或 str
         dlq_entry = {
             "original_msg_id": message_id,
             "failed_reason": reason,
             "failed_at": str(time.time()),
-            # 保留原始 payload，方便人工排查
             "payload": message_data.get(b'payload', b'')
         }
         redis_client.xadd(DLQ_STREAM_KEY, dlq_entry)
-        debug_log(f"💀 移入死信队列: {message_id} | 原因: {reason}", "WARNING")
+        debug_log(f"💀 移入死信队列: {message_id}", "WARNING")
     except Exception as e:
-        debug_log(f"DLQ 写入失败: {e}", "ERROR")
+        debug_log(f"Redis DLQ 写入失败: {e}", "ERROR")
+
+    # 2. 更新数据库 (复用 _mark_failed)
+    # 临时创建一个 db session，用完即关
+    db = SessionLocal()
+    try:
+        payload_bytes = message_data.get(b'payload')
+        if payload_bytes:
+            # 尝试解析 ID
+            task_data = json.loads(payload_bytes)
+            task_id = task_data.get('task_id')
+
+            # 🔥 核心：直接调用你现有的辅助函数！
+            # 这样你就不用重复写 "db.query(Task)... task.status=FAILED..." 这些代码了
+            if task_id:
+                _mark_failed(db, task_id, f"Task Failed: {reason}")
+                debug_log(f"已同步错误至数据库: {task_id}", "SUCCESS")
+
+    except json.JSONDecodeError:
+        debug_log("无法解析 JSON，跳过数据库更新", "WARNING")
+    except Exception as e:
+        debug_log(f"关联数据库更新失败: {e}", "ERROR")
+    finally:
+        db.close()  # 务必关闭
 
 
 def recover_pending_tasks():
