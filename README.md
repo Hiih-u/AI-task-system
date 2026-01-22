@@ -1,27 +1,31 @@
-# 🚀 AI Task System (Async + Redis Streams)
+# 🚀 AI Task System (Enterprise Async Architecture)
 
-这是一个基于 **FastAPI** 和 **Redis Streams** 构建的企业级异步 AI 任务处理系统。它将前端的同步等待解耦，支持高并发的任务分发，并通过 Consumer Group 模式实现可靠的消息处理与故障恢复。
+这是一个基于 **FastAPI**、**Redis Streams** 和 **PostgreSQL** 构建的企业级异步 AI 任务处理系统。
+
+本项目采用了先进的 **Master-Detail (批次-任务)** 架构，支持**请求扇出 (Request Fan-out)**，即一次用户请求可以同时触发多个 AI 模型（如 Gemini, Qwen, DeepSeek）并行处理。系统实现了生产级的高并发、高可用与故障恢复机制。
 
 ## 🌟 核心特性
 
-* **⚡ 异步流式架构**：采用 **Redis Streams** 替代传统 List 队列，支持多消费者组（Consumer Groups），确保高吞吐量与消息不丢失。
-* **🔄 智能模型路由**：
-* `api-gateway` 根据请求中的 `model` 字段自动分发任务到不同的 Stream：
-* `gemini-*` → **`gemini_stream`**
-* `deepseek-*` → **`deepseek_stream`** (New!)
-* `sd-*` / `stable-*` → **`sd_stream`**
+* **⚡ 扇出架构 (Fan-out)**:
+* 支持单次请求指定多个模型（例如 `"model": "gemini-flash, deepseek-r1"`）。
+* 网关自动将请求拆分为多个独立的子任务 (`Task`)，并行分发到不同的 Redis Stream。
 
 
+* **🏗️ 主从表设计 (Batch & Task)**:
+* **ChatBatch (主表)**: 记录用户的一次完整请求生命周期。
+* **Task (子表)**: 记录每个具体模型的执行结果、耗时与状态。
 
 
-* **🛡️ 健壮的可靠性设计**：
-* **崩溃恢复 (Crash Recovery)**：Worker 启动及心跳检测时，会自动扫描 PEL (Pending Entries List)，重新处理那些“已认领但未确认”的旧任务。
-* **幂等性检查 (Idempotency)**：在处理消息前会检查数据库状态，防止因重复消费导致的任务重复执行。
+* **🔄 智能路由与多模型支持**:
+* `gemini-*` → **Gemini Worker** (支持软拒绝检测与 Google 登录保活)
+* `qwen-*` / `llama-*` → **Qwen/Ollama Worker** (通用本地模型)
+* `deepseek-*` → **DeepSeek Worker** (支持 R1 推理与深度思考)
 
 
-* **📊 完整的日志与追踪**：
-* **SystemLog**：自动捕获异常堆栈 (Stack Trace) 并持久化到 PostgreSQL，支持通过 `.env` 开关控制。
-* **Conversation Context**：内置会话管理，支持存储和查询多轮对话历史。
+* **🛡️ 生产级可靠性**:
+* **崩溃恢复**: Worker 启动时自动扫描 Redis PEL (Pending Entries List) 恢复未确认任务。
+* **幂等性设计**: 防止网络抖动导致的任务重复执行。
+* **日志开关**: 通过 `.env` 中的 `ENABLE_DB_LOG` 一键控制是否将错误堆栈写入数据库，防止日志爆炸。
 
 
 
@@ -30,199 +34,201 @@
 ```text
 ai-task-system/
 ├── api-gateway/
-│   ├── Dockerfile           # API 服务容器构建
-│   ├── server.py            # FastAPI 入口：任务分发与路由逻辑
-│   └── main.py              # (可选入口)
+│   ├── server.py            # 核心网关：负责 Batch 创建、任务拆分与 Redis 路由
+│   └── Dockerfile           # 网关容器化配置
 ├── workers/
-│   └── gemini/
-│       └── http_worker.py   # 核心 Worker：消费 Stream -> 幂等检查 -> 调用 AI -> 落库 -> ACK
-├── shared/                  # 共享模块
-│   ├── database.py          # 数据库连接池与 Session 管理
-│   ├── models.py            # ORM 模型: Task, Conversation, SystemLog
-│   ├── schemas.py           # Pydantic 数据验证模型
-│   └── utils.py             # 通用工具 (含数据库日志记录器)
+│   ├── gemini/              # Google Gemini 专用 Worker
+│   ├── qwen/                # 通用 Ollama/Qwen Worker
+│   └── deepseek/            # DeepSeek R1 专用 Worker
+├── shared/                  # 共享内核
+│   ├── database.py          # 数据库连接池 (带 Pool Pre-Ping)
+│   ├── models.py            # SQLAlchemy 模型 (ChatBatch, Task, Conversation)
+│   ├── schemas.py           # Pydantic 验证模型
+│   └── utils/               # 日志与工具类
 ├── init/
-│   └── init_db.py           # ⚠️ 数据库初始化脚本 (自动建表)
-├── .env                     # 环境变量配置
-├── requirements.txt         # 项目依赖
-└── README.md                # 项目文档
+│   └── init_db.py           # 数据库初始化脚本
+├── .env                     # 配置文件
+└── requirements.txt         # 项目依赖
 
 ```
 
-## 🛠️ 技术栈
-
-* **Web 框架**: FastAPI (Python 3.10+)
-* **数据库**: PostgreSQL (SQLAlchemy ORM + Psycopg2)
-* **消息队列**: Redis Streams (5.0+)
-* **依赖管理**: Pydantic v2, Uvicorn, Requests
-
-## ⚙️ 快速开始
+## 🛠️ 快速开始
 
 ### 1. 环境准备
 
-确保本地已安装 PostgreSQL 和 Redis。
+确保本地已安装 **PostgreSQL** (推荐 v14+) 和 **Redis**。
 
 ```bash
-# 1. 克隆项目 & 进入目录
+# 1. 克隆项目
 git clone https://github.com/Hiih-u/AI-task-system.git
 cd ai-task-system
 
-# 2. 创建并激活虚拟环境
+# 2. 创建虚拟环境
 python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# venv\Scripts\activate   # Windows
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
 # 3. 安装依赖
 pip install -r requirements.txt
 
 ```
 
-### 2. 配置文件 (.env)
+### 2. 配置文件
 
-在项目根目录创建 `.env` 文件，根据实际环境修改配置。
+复制 `.env.example` 为 `.env` 并修改配置：
 
 ```ini
-# --- 数据库配置 ---
+# .env
 DB_HOST=127.0.0.1
-DB_PORT=5432
-POSTGRES_DB=gemini
 POSTGRES_USER=postgres
 POSTGRES_PASSWORD=your_password
 
-# --- Redis 配置 ---
+# Redis
 REDIS_HOST=127.0.0.1
-REDIS_PORT=6379
 
-# --- Worker 配置 ---
-# 下游真实 AI 服务地址 (Worker 会透传请求)
+# AI 服务地址 (根据你的实际情况配置)
 GEMINI_SERVICE_URL=http://localhost:61080/v1/chat/completions
+LLM_SERVICE_URL=http://192.168.202.155:11434/v1/chat/completions  # Ollama/Qwen
+DEEPSEEK_SERVICE_URL=http://192.168.202.155:11434/v1/chat/completions # DeepSeek
 
-# Worker 身份标识 (用于 Redis Consumer Group 区分消费者)
-WORKER_ID=gemini-worker-01
+GEMINI_WORKER_ID=gemini-worker-01
+QWEN_WORKER_ID=qwen-worker-01
+DEEPSEEK_WORKER_ID=deepseek-worker-01
 
-# --- 日志配置 ---
-# True: 开启数据库错误日志记录 (开发调试推荐)
-# False: 仅控制台输出 (生产环境推荐，减少数据库压力)
-ENABLE_DB_LOG=True
+
+# 日志开关 (False=生产环境不写库)
+ENABLE_DB_LOG=False
 
 ```
 
 ### 3. 初始化数据库
 
-⚠️ **警告**：此脚本会执行 `DROP ALL`，清空现有数据库表结构和数据！仅在首次部署或重置环境时使用。
+**⚠️ 注意**：此操作会清空现有表结构！
 
 ```bash
 python init/init_db.py
 
 ```
 
-*输出 `✅ 数据库表结构同步完成！` 即表示成功。*
+*看到 `✅ 数据库表结构同步完成！` 即表示成功。*
 
-## 🚀 启动服务
+### 4. 启动服务
 
-建议开启两个终端窗口分别运行组件。
+建议在不同的终端窗口中运行：
 
-### 终端 1：启动 API Gateway
-
-API 服务默认运行在 8000 端口，提供 Swagger 文档。
+**终端 1: API 网关**
 
 ```bash
-# 开发模式 (支持热重载)
-uvicorn api-gateway.server:app --reload --host 0.0.0.0 --port 8000
+python api-gateway/server.py
+# 或使用 uvicorn (生产推荐)
+# uvicorn api-gateway.server:app --host 0.0.0.0 --port 8000
 
 ```
 
-### 终端 2：启动 Worker
-
-Worker 启动后会自动加入 `gemini_workers_group` 消费者组，并开始处理任务。
+**终端 2: 启动 Workers (按需启动)**
 
 ```bash
+# 启动 Gemini 工人
 python workers/gemini/gemini_worker.py
 
+# 启动 DeepSeek 工人
+python workers/deepseek/deepseek_worker.py
+
+# 启动 Qwen/Ollama 工人
+python workers/qwen/qwen_worker.py
+
 ```
 
-*启动成功后你将看到 `🚀 Stream Worker 启动` 以及 `♻️ 发现 x 个挂起任务` 的日志。*
+## 🔌 API 接口使用指南
 
-## 🔌 API 接口说明
+### 1. 提交并发任务 (Fan-out)
 
-完整文档请访问 Swagger UI: `http://127.0.0.1:8000/docs`
+一次请求，让多个模型同时回答。
 
-### 1. 提交对话任务
-
-* **URL**: `POST /v1/chat/completions`
-* **Body**:
+* **Endpoint**: `POST /v1/chat/completions`
+* **Payload**:
 ```json
 {
-  "prompt": "如何用 Python 读取 CSV？",
-  "model": "gemini-2.5-flash", 
-  "conversation_id": null 
+  "prompt": "如何用 Python 读取 CSV 文件？",
+  "model": "gemini-2.5-flash, deepseek-r1:1.5b", 
+  "conversation_id": null
 }
 
 ```
 
 
-> **Tip**: 如果 `model` 包含 "deepseek"，任务会自动路由到 `deepseek_stream`；如果包含 "sd" 或 "stable"，则路由到 `sd_stream`。
-
-
+*注意：`model` 字段支持逗号分隔。*
 * **Response**:
 ```json
 {
-  "task_id": "550e8400-e29b...",
-  "status": 0,
-  "conversation_id": "c123...",
-  "message": "对话请求已入队"
+  "batch_id": "batch-uuid-1234...",
+  "conversation_id": "conv-uuid-5678...",
+  "message": "Tasks dispatched successfully",
+  "task_ids": ["task-1...", "task-2..."]
 }
 
 ```
 
 
 
-### 2. 查询任务结果 (轮询)
+### 2. 轮询批次结果
 
-前端拿到 `task_id` 后轮询此接口，直到 `status` 变为 `1` (SUCCESS) 或 `2` (FAILED)。
+查看所有模型的执行进度和结果。
 
-* **URL**: `GET /v1/tasks/{task_id}`
+* **Endpoint**: `GET /v1/batches/{batch_id}`
 * **Response**:
 ```json
 {
-  "task_id": "...",
-  "status": 1,
-  "task_type": "TEXT",
-  "response_text": "可以使用 pandas 库...",
-  "cost_time": 1.25,
-  "created_at": "2024-03-20T10:00:00"
+  "batch_id": "batch-uuid-1234...",
+  "status": "PROCESSING",
+  "results": [
+    {
+      "model_name": "gemini-2.5-flash",
+      "status": 1, 
+      "response_text": "使用 pandas 库...",
+      "cost_time": 1.2
+    },
+    {
+      "model_name": "deepseek-r1:1.5b",
+      "status": 0,
+      "response_text": null
+    }
+  ]
 }
 
 ```
 
 
 
-### 3. 获取会话历史
+### 3. 查看会话历史
 
-获取某个会话的完整上下文，用于前端展示历史聊天记录。
+* **Endpoint**: `GET /v1/conversations/{conversation_id}/history`
 
-* **URL**: `GET /v1/conversations/{conversation_id}/history`
+## 🧠 核心逻辑图解
 
-## 🧠 核心机制详解
+```mermaid
+graph TD
+    User[用户请求] -->|POST /chat| Gateway[API 网关]
+    Gateway -->|1. 创建 Batch| DB[(PostgreSQL)]
+    Gateway -->|2. 拆分 Tasks| DB
+    Gateway -->|3. 路由分发| Redis{Redis Streams}
+    
+    Redis -->|gemini_stream| WorkerG[Gemini Worker]
+    Redis -->|qwen_stream| WorkerQ[Qwen Worker]
+    Redis -->|deepseek_stream| WorkerD[DeepSeek Worker]
+    
+    WorkerG -->|更新状态| DB
+    WorkerQ -->|更新状态| DB
+    WorkerD -->|更新状态| DB
 
-### 1. 消息生命周期
-
-1. **API** 接收请求 -> 解析 Model -> `XADD` 写入对应 Stream (maxlen~10)。
-2. **Worker** 通过 `XREADGROUP` 抢占消息 (进入 Pending 状态)。
-3. **Worker** 处理业务 -> **更新 DB** -> **XACK** (从 Pending 中移除)。
-
-### 2. 崩溃恢复流程 (Crash Recovery)
-
-如果 Worker 在 `XACK` 之前崩溃：
-
-* 消息会一直停留在 Redis 的 **PEL (Pending Entries List)** 中。
-* Worker 重启时，或心跳检测 (`recover_pending_tasks`) 触发时，会扫描这些旧消息。
-* **关键机制**：在重试前，Worker 会先查数据库 (`check_idempotency=True`)。如果发现该任务 ID 已经是 `SUCCESS`，则直接补发 `XACK` 而不重复执行 AI 请求。
+```
 
 ## ❓ 常见问题
 
-**Q: 为什么 Redis Stream 里的消息数量有时候会超过 10 条？**
-A: 代码中使用了 `maxlen=10`，Redis 默认采用近似修剪 (`~`) 算法。这是为了性能优化，允许流长度在小范围内（如 10-20 条）浮动，属于正常现象。
+**Q: 如何接入 DeepSeek R1？**
+A: 确保你本地运行了 Ollama (`ollama run deepseek-r1:1.5b`)，然后在 `.env` 中配置 `DEEPSEEK_SERVICE_URL` 指向 Ollama 地址，前端请求时 `model` 填入 `deepseek` 即可自动路由。
 
-**Q: 如何横向扩展 Worker？**
-A: 可以在多台机器上启动 `http_worker.py`，只需修改 `.env` 中的 `WORKER_ID` (如 `gemini-worker-02`)，它们会自动加入同一个消费者组，实现负载均衡。
+**Q: 数据库报错 `server closed the connection unexpectedly`？**
+A: 系统已集成 `pool_pre_ping=True` 机制自动处理断连，如果依然出现，请检查 Postgres 容器内存是否充足。
+
+**Q: 如何扩展 Worker 性能？**
+A: 可以在多台机器上启动同一个 Worker 脚本，只需在 `.env` 中修改 `WORKER_ID` 即可自动组成消费者组进行负载均衡。
