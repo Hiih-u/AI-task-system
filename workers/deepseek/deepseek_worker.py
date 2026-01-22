@@ -150,8 +150,9 @@ def process_message(message_id, message_data, check_idempotency=True):
         redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
     except Exception as e:
+        db.rollback()
         debug_log(f"Worker 异常: {e}", "ERROR")
-        mark_task_failed(db, task_id, f"系统错误: {str(e)}")
+        mark_task_failed(db, task_id, f"系统内部处理错误: {str(e)}")
         redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
     finally:

@@ -211,6 +211,7 @@ def process_message(message_id, message_data, check_idempotency=True):
         redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
     except Exception as e:
+        db.rollback()
         # 代码逻辑崩溃
         debug_log(f"Worker 内部崩溃: {e}", "ERROR")
         log_error("Worker-Gemini", "Unknown Exception", task_id, e)
