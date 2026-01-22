@@ -1,15 +1,49 @@
-# schemas.py
+# shared/schemas.py
 from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, List
 
-class TaskSubmitResponse(BaseModel):
+
+# --- 单个任务详情 ---
+class TaskSchema(BaseModel):
     task_id: str
+    model_name: str
     status: int
-    conversation_id: str  # 返回会话ID，方便前端下次使用
-    message: str = "请求成功"
+    response_text: Optional[str] = None
+    error_msg: Optional[str] = None
+    cost_time: Optional[float] = None
 
-# 任务状态响应
+    class Config:
+        from_attributes = True
+
+
+# --- [新增] 批次查询响应 ---
+class BatchQueryResponse(BaseModel):
+    batch_id: str
+    status: str
+    user_prompt: str
+    created_at: datetime
+    # 返回该批次下所有模型的执行结果
+    results: List[TaskSchema]
+
+    class Config:
+        from_attributes = True
+
+
+# --- 提交请求 ---
+class ChatRequest(BaseModel):
+    prompt: str
+    # 允许传入 "gemini-2.5-flash,qwen2.5:7b"
+    model: str = "gemini-2.5-flash"
+    conversation_id: Optional[str] = None
+
+
+class BatchSubmitResponse(BaseModel):
+    batch_id: str
+    conversation_id: str
+    message: str
+    task_ids: List[str]  # 告诉前端生成了哪些子任务
+
 class TaskQueryResponse(BaseModel):
     task_id: str
     conversation_id: Optional[str]
@@ -21,24 +55,7 @@ class TaskQueryResponse(BaseModel):
     # 结果字段
     response_text: Optional[str] = None
 
-    model: str
+    model_name: str
 
     class Config:
         from_attributes = True
-
-# 新增：会话详情响应（用于查看历史）
-class ConversationResponse(BaseModel):
-    conversation_id: str
-    title: Optional[str]
-    created_at: datetime
-    updated_at: datetime
-    # 可以在这里嵌套 tasks 列表来返回历史记录，视需求而定
-
-    class Config:
-        from_attributes = True
-
-# === 新增：文本对话请求 ===
-class ChatRequest(BaseModel):
-    prompt: str
-    model: str = "gemini-2.5-flash"
-    conversation_id: Optional[str] = None

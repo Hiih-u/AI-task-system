@@ -1,58 +1,189 @@
-# server.py
 import json
 import os
-
-from dotenv import load_dotenv
+import uuid
 import redis
-from fastapi import FastAPI, Depends, HTTPException
+import time
+from datetime import datetime
+from typing import List, Optional
+
+from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from shared import models, schemas, database
-from shared.database import engine, get_db
+
+from shared import models, schemas
+from shared.database import SessionLocal, engine, Base
 from shared.models import TaskStatus
-from shared.utils import log_error, debug_log
+from shared.utils.logger import log_error, debug_log
 
-load_dotenv()
-app = FastAPI(title="AI Async API")
 
+# 自动创建表结构 (生产环境建议用 Alembic，开发环境可以直接用这个)
+Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="AI Task Gateway", version="2.0.0")
+
+# --- CORS 配置 ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Redis 连接 ---
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-
-# 连接 Redis
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
 
-def dispatch_task(task_data: dict):
-    """
-    任务分发：使用 Redis Stream (XADD)
-    """
-    model_name = task_data.get("model", "").lower()
+# --- 依赖注入 ---
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-    # 1. 确定 Stream 名称 (跟之前的队列名逻辑保持一致)
-    if "gemini" in model_name:
-        stream_key = "gemini_stream"  # 改个名字区分一下，叫 stream 更直观
-    elif "sd" in model_name or "stable" in model_name:
-        stream_key = "sd_stream"
+
+# --- 辅助函数：获取或创建会话 ---
+def _get_or_create_conversation(db: Session, conversation_id: Optional[str], prompt: str):
+    if conversation_id:
+        conv = db.query(models.Conversation).filter(
+            models.Conversation.conversation_id == conversation_id
+        ).first()
+        if conv:
+            return conv
+
+    # 如果没传 ID 或者 ID 没找到，创建新的
+    new_conv_id = conversation_id if conversation_id else str(uuid.uuid4())
+    # 简单的标题生成策略：取 Prompt 前20个字
+    title = prompt[:20] + "..." if len(prompt) > 20 else prompt
+
+    new_conv = models.Conversation(
+        conversation_id=new_conv_id,
+        title=title,
+        created_at=datetime.now(),
+        updated_at=datetime.now()
+    )
+    db.add(new_conv)
+    db.commit()
+    db.refresh(new_conv)
+    return new_conv
+
+
+# --- 核心逻辑：路由分发 ---
+def dispatch_to_stream(task_payload: dict) -> str:
+    """根据模型名称决定投递到哪个 Redis Stream"""
+    model_name = task_payload.get("model", "").lower()
+
+    stream_key = "gemini_stream"  # 默认兜底
+
+    if "qwen" in model_name or "千问" in model_name:
+        stream_key = "qwen_stream"
     elif "deepseek" in model_name:
         stream_key = "deepseek_stream"
-    else:
+    elif "gemini" in model_name:
         stream_key = "gemini_stream"
+    elif "sd" in model_name or "stable" in model_name:
+        stream_key = "sd_stream"
 
-    # 2. 推送到 Stream
-    # xadd(stream_name, fields)
-    # maxlen=10000 表示限制流的最大长度，防止 Redis 内存爆满
-    try:
-        redis_client.xadd(
-            stream_key,
-            {"payload": json.dumps(task_data)}, # 把数据包在一个字段里
-            maxlen=10
-        )
-    except Exception as e:
-        debug_log(f"Redis XADD 失败: {e}", "ERROR")
-        raise e
-
+    # 执行投递
+    redis_client.xadd(stream_key, {"payload": json.dumps(task_payload)})
     return stream_key
 
-# --- 接口 : 查询任务状态 ---
+
+# ==========================================
+# API 接口定义
+# ==========================================
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok", "redis": redis_client.ping()}
+
+
+# === 1. 提交任务 (Fan-out 模式) ===
+@app.post("/v1/chat/completions", response_model=schemas.BatchSubmitResponse)
+def create_chat_task(request: schemas.ChatRequest, db: Session = Depends(get_db)):
+    """
+    接收用户请求，创建 Batch，拆分为多个 Task 并分发
+    支持 request.model = "gemini-flash, qwen-7b"
+    """
+    try:
+        debug_log("=" * 40, "REQUEST")
+        debug_log(f"收到请求 | Models: {request.model}", "REQUEST")
+
+        # 1. 准备会话
+        conversation = _get_or_create_conversation(db, request.conversation_id, request.prompt)
+
+        # 2. 创建 Batch (总订单)
+        new_batch = models.ChatBatch(
+            conversation_id=conversation.conversation_id,
+            user_prompt=request.prompt,
+            model_config=request.model,
+            status="PROCESSING"
+        )
+        db.add(new_batch)
+        db.commit()
+        db.refresh(new_batch)
+
+        # 3. 拆分模型列表 (去除空格)
+        # 例如: "gemini, qwen" -> ["gemini", "qwen"]
+        model_list = [m.strip() for m in request.model.split(",") if m.strip()]
+        if not model_list:
+            model_list = ["gemini-2.5-flash"]  # 默认值
+
+        created_tasks = []
+
+        # 4. 循环创建子任务
+        for model_name in model_list:
+            # A. 写入数据库
+            new_task = models.Task(
+                task_id=str(uuid.uuid4()),  # 显式生成 UUID
+                batch_id=new_batch.batch_id,  # 关联 Batch
+                conversation_id=conversation.conversation_id,  # 冗余方便查
+                prompt=request.prompt,
+                model_name=model_name,
+                status=TaskStatus.PENDING,
+                task_type="TEXT"
+            )
+            db.add(new_task)
+            # 这里的 commit 是为了让 task_id 生效，也可以批量 commit 优化性能
+            db.commit()
+            db.refresh(new_task)
+            created_tasks.append(new_task)
+
+            # B. 组装 Payload (发给 Worker 的数据)
+            # Worker 不需要知道 Batch 的存在，它只认 task_id 和 conversation_id
+            task_payload = {
+                "task_id": new_task.task_id,
+                "conversation_id": conversation.conversation_id,
+                "prompt": new_task.prompt,
+                "model": new_task.model_name
+            }
+
+            # C. 入队 Redis
+            try:
+                target_queue = dispatch_to_stream(task_payload)
+                debug_log(f" -> [分发] 模型: {model_name} -> 队列: {target_queue}", "INFO")
+            except Exception as e:
+                log_error("API-Gateway", f"Redis 入队失败: {model_name}", new_task.task_id, e)
+                # 标记该子任务失败，但不影响其他任务
+                new_task.status = TaskStatus.FAILED
+                new_task.error_msg = "系统繁忙: 队列服务异常"
+                db.commit()
+
+        return {
+            "batch_id": new_batch.batch_id,
+            "conversation_id": conversation.conversation_id,
+            "message": "Tasks dispatched successfully",
+            "task_ids": [t.task_id for t in created_tasks]
+        }
+
+    except Exception as e:
+        log_error("API-Gateway", "全局异常", error=e)
+        raise HTTPException(status_code=500, detail=f"Server Error: {str(e)}")
+
+
 @app.get("/v1/tasks/{task_id}", response_model=schemas.TaskQueryResponse)
 def get_task_status(task_id: str, db: Session = Depends(get_db)):
     """
@@ -80,176 +211,62 @@ def get_task_status(task_id: str, db: Session = Depends(get_db)):
     debug_log(f"任务 {task_id} 状态: {task.status}", "INFO")
     return task
 
-# --- 接口 : 获取会话历史 ---
-@app.get("/v1/conversations/{conversation_id}/history")
-def get_conversation_history(conversation_id: str, db: Session = Depends(get_db)):
+
+
+
+@app.get("/v1/batches/{batch_id}", response_model=schemas.BatchQueryResponse)
+def get_batch_result(batch_id: str, db: Session = Depends(get_db)):
     """
-        获取会话历史API端点
+    前端轮询此接口，获取整个 Batch 的执行状态和所有子模型的结果
+    """
+    batch = db.query(models.ChatBatch).filter(models.ChatBatch.batch_id == batch_id).first()
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch ID not found")
 
-        功能:
-            查询指定会话中的所有任务记录，按时间顺序排列，形成完整的对话历史
+    # 检查整体状态 (可选优化：如果所有 Task 都完成了，更新 Batch 状态为 COMPLETED)
+    # 这里简单处理：直接返回 Batch 信息和它关联的 Tasks
 
-        参数:
-            conversation_id: 会话ID（路径参数）
-            db: 数据库会话（自动注入）
+    return {
+        "batch_id": batch.batch_id,
+        "status": batch.status,
+        "user_prompt": batch.user_prompt,
+        "created_at": batch.created_at,
+        "results": batch.tasks  # SQLAlchemy relationship 会自动拉取子任务
+    }
 
-        返回:
-            dict: 包含会话ID和消息历史的字典
-                - conversation_id: 会话ID
-                - messages: 消息列表，每条消息包含角色、内容、时间等信息
 
-        异常:
-            HTTP 404: 会话不存在或没有历史记录
-        """
-    """获取某个会话的所有任务历史"""
-    # 1. 查询任务，按时间正序排列
-    debug_log(f"获取会话历史: {conversation_id}", "CHAT")
+@app.get("/v1/conversations/{conversation_id}/history")
+def get_history(conversation_id: str, db: Session = Depends(get_db)):
+    # 1. 获取该会话下所有成功的任务，按时间排序
     tasks = db.query(models.Task).filter(
-        models.Task.conversation_id == conversation_id
+        models.Task.conversation_id == conversation_id,
+        models.Task.status == TaskStatus.SUCCESS
     ).order_by(models.Task.created_at.asc()).all()
 
-    if not tasks:
-        debug_log(f"会话不存在: {conversation_id}", "WARNING")
-        raise HTTPException(status_code=404, detail="Conversation not found")
-
+    # 2. 构建消息列表
     messages = []
     for t in tasks:
-        # --- A. 添加用户的提问 ---
+        # A. 先放用户的提问
         messages.append({
             "role": "user",
             "content": t.prompt,
-            "created_at": t.created_at
+            "model": t.model_name
         })
 
-        # --- B. 添加 AI 的回复 ---
-        # 只要不是初始状态，通常都应该显示（包括 PENDING, SUCCESS, FAILED）
-        if t.status:
-            assistant_msg = {
+        # B. 再放 AI 的回答 (如果有的话)
+        if t.response_text:
+            messages.append({
                 "role": "assistant",
-                "status": t.status,
-                "created_at": t.updated_at or t.created_at,
-                # 统一转为小写给前端 (text/image)
-                "type": t.task_type.lower() if t.task_type else "text"
-            }
+                "content": t.response_text,
+                "model": t.model_name
+            })
 
-            # 核心修正：无论图片还是文本，内容都存在 response_text 字段里
-            # Gemini 返回的图片通常是 Markdown 格式： "Here is the image:\n![img](url)"
-            if t.status == TaskStatus.SUCCESS:
-                assistant_msg["content"] = t.response_text
-            elif t.status == TaskStatus.FAILED:
-                assistant_msg["content"] = f"任务失败: {t.error_msg}"
-            else:
-                # PENDING 状态
-                assistant_msg["content"] = ""
+    # 直接返回列表即可，前端通常直接渲染这个数组
+    return messages
 
-            messages.append(assistant_msg)
-
-    debug_log(f"返回历史记录: {len(messages)} 条消息", "SUCCESS")
-    return {"conversation_id": conversation_id, "messages": messages}
-
-
-# --- 接口 : 对话 ---
-@app.post("/v1/chat/completions", response_model=schemas.TaskSubmitResponse)
-def create_chat_task(request: schemas.ChatRequest, db: Session = Depends(get_db)):
-    """
-        统一入口：处理文本对话、图像生成、多模态任务
-
-        无论用户是想聊天还是画图，都通过此接口提交。
-        Gemini 会根据 prompt 内容自动决定输出文本还是图片。
-    """
-    # 使用 try-except 包裹整个业务逻辑
-    try:
-        debug_log("=" * 40, "REQUEST")
-        debug_log(f"收到对话请求 | 模型: {request.model}", "REQUEST")
-
-        # 1. 处理会话
-        conversation = _get_or_create_conversation(db, request.conversation_id, request.prompt)
-
-        # 2. 创建任务
-        new_task = models.Task(
-            prompt=request.prompt,
-            model_name=request.model,
-            status=0,  # PENDING
-            conversation_id=conversation.conversation_id,
-            task_type="TEXT",
-            role="user"
-        )
-        db.add(new_task)
-        db.commit()
-        db.refresh(new_task)
-
-        # 3. 推送 Redis
-        task_payload = {
-            "task_id": new_task.task_id,
-            "conversation_id": conversation.conversation_id,
-            "type": "TEXT",
-            "prompt": new_task.prompt,
-            "model": new_task.model_name
-        }
-
-        # 这里也是容易出错的地方（Redis 连接失败）
-        try:
-            target_queue = dispatch_task(task_payload)
-            debug_log(f"任务 {new_task.task_id} 已分发至队列: {target_queue}", "SUCCESS")
-        except Exception as e_redis:
-            # 如果推送到 Redis 失败，记录严重错误
-            log_error(
-                source="API-Gateway",
-                message=f"Redis 推送失败: {str(e_redis)}",
-                task_id=new_task.task_id,
-                error=e_redis
-            )
-            # 可以在这里选择是否回滚数据库，或者将任务标记为 FAILED
-            new_task.status = TaskStatus.FAILED
-            new_task.error_msg = "系统繁忙 (Queue Error)"
-            db.commit()
-            raise HTTPException(status_code=500, detail="任务入队失败，请联系管理员")
-
-        debug_log("=" * 40, "REQUEST")
-
-        return {
-            "message": "对话请求已入队",
-            "task_id": new_task.task_id,
-            "conversation_id": conversation.conversation_id,
-            "status": new_task.status
-        }
-
-    except HTTPException:
-        raise  # 如果是我们自己抛出的 HTTPException，直接透传
-    except Exception as e:
-        # ✅ 捕获所有未知的 API 错误
-        log_error(
-            source="API-Gateway",
-            message="创建对话任务时发生未处理异常",
-            task_id=None,
-            error=e
-        )
-        # 告诉前端服务器出错了，而不是直接崩溃
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-
-
-# 辅助函数：复用会话逻辑
-def _get_or_create_conversation(db, conversation_id, prompt):
-    if conversation_id:
-        conv = db.query(models.Conversation).filter(models.Conversation.conversation_id == conversation_id).first()
-        if conv:
-            # 增强：如果找到了老会话，更新一下活跃时间
-            # 注意：models.datetime 需要确保 models 里导出了 datetime，或者这里用 datetime.now()
-            conv.updated_at = models.datetime.now()
-            db.commit() # 提交更新
-            return conv
-
-    # 新建 (如果没传ID，或者传了ID但数据库里没找到，都走到这里新建)
-    # 使用 prompt 的前30个字符作为默认标题
-    title_str = prompt[:30] if prompt else "New Conversation"
-    conv = models.Conversation(title=title_str, session_metadata={})
-    db.add(conv)
-    db.commit()
-    db.refresh(conv)
-    return conv
 
 if __name__ == "__main__":
     import uvicorn
 
-    debug_log("🚀 启动 API Gateway...", "INFO")
+    # 启动命令: python api-gateway/server.py
     uvicorn.run(app, host="0.0.0.0", port=8000)
