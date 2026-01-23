@@ -75,7 +75,7 @@ def init_stream():
 
 def get_target_url(db, conversation_id):
     """
-    🎯 核心路由逻辑：实现会话粘性 (Sticky Session)
+    🎯 核心路由逻辑：实现会话粘性 (Sticky Session) - 修正版
     """
     if not nacos_client:
         debug_log("❌ Nacos 客户端未初始化", "ERROR")
@@ -85,10 +85,7 @@ def get_target_url(db, conversation_id):
         # 1. 获取实例
         res = nacos_client.list_naming_instance(SERVICE_NAME, healthy_only=True)
 
-        # 🔥🔥🔥 调试日志：看看 Nacos 到底返回了什么
-        # debug_log(f"🔍 Nacos 返回原始数据: {type(res)} - {res}", "DEBUG")
-
-        # 2. 兼容性处理：如果是字典，尝试提取 'hosts' 字段
+        # 2. 兼容性处理
         instances = []
         if isinstance(res, dict):
             instances = res.get('hosts', [])
@@ -98,24 +95,26 @@ def get_target_url(db, conversation_id):
             debug_log(f"❌ Nacos 返回数据格式异常: {type(res)}", "ERROR")
             return None
 
-        # 3. 再次检查列表是否为空
         if not instances:
-            debug_log(f"⚠️ Nacos 中没有找到健康实例 (Namespace='{NACOS_NAMESPACE}', Service='{SERVICE_NAME}')",
-                      "WARNING")
+            debug_log(f"⚠️ Nacos 无健康实例", "WARNING")
             return None
 
-        # 4. 提取健康 IP 映射表 (IP -> 实例对象)
-        # 注意：这里加了 try-except 防止某个实例数据缺字段导致整个崩掉
+        # ========================================================
+        # 🔥 修改点 1: 使用 "IP:Port" 作为唯一 Key，防止同 IP 覆盖
+        # ========================================================
         healthy_map = {}
         for ins in instances:
             try:
                 if isinstance(ins, dict) and 'ip' in ins and 'port' in ins:
-                    healthy_map[ins['ip']] = ins
+                    # 组合 Key: "192.168.x.x:8001"
+                    unique_key = f"{ins['ip']}:{ins['port']}"
+                    healthy_map[unique_key] = ins
             except Exception as e:
-                debug_log(f"⚠️ 跳过异常实例数据: {ins} - {e}", "WARNING")
+                debug_log(f"⚠️ 跳过异常实例: {e}", "WARNING")
 
         target_ip = None
         target_port = 8000
+        chosen_key = None
 
         # 5. 会话粘性逻辑 (优先复用旧节点)
         conv = None
@@ -125,30 +124,43 @@ def get_target_url(db, conversation_id):
             ).first()
 
             if conv and conv.session_metadata:
-                last_ip = conv.session_metadata.get("assigned_node")
-                # 检查旧 IP 是否在健康列表中
-                if last_ip and last_ip in healthy_map:
-                    target_ip = last_ip
-                    target_port = healthy_map[last_ip]['port']
-                    debug_log(f"🔗 [会话粘性] 复用旧节点: {target_ip}:{target_port}", "INFO")
+                # 数据库里存的可能是旧格式(IP)或新格式(IP:Port)，需要兼容
+                last_node_key = conv.session_metadata.get("assigned_node_key")  # 优先用新字段
+
+                # 如果没有新字段，尝试兼容旧逻辑 (但这在单IP多端口下不可靠，略过)
+
+                if last_node_key and last_node_key in healthy_map:
+                    chosen_ins = healthy_map[last_node_key]
+                    target_ip = chosen_ins['ip']
+                    target_port = chosen_ins['port']
+                    chosen_key = last_node_key
+                    debug_log(f"🔗 [会话粘性] 复用节点: {chosen_key}", "INFO")
 
         # 6. 负载均衡 (随机选择)
         if not target_ip:
             if not healthy_map:
-                debug_log("❌ 有效实例列表为空", "ERROR")
+                debug_log("❌ 有效实例映射为空", "ERROR")
                 return None
 
-            # 从 healthy_map 的 values (实例对象列表) 中随机选一个
-            chosen = random.choice(list(healthy_map.values()))
-            target_ip = chosen['ip']
-            target_port = chosen['port']
-            debug_log(f"🎲 [新分配] 分配新节点: {target_ip}:{target_port}", "INFO")
+            # 从所有健康的 "IP:Port" 中随机选一个
+            chosen_key = random.choice(list(healthy_map.keys()))
+            chosen_ins = healthy_map[chosen_key]
 
-            # 记录到数据库
+            target_ip = chosen_ins['ip']
+            target_port = chosen_ins['port']
+            debug_log(f"🎲 [新分配] 分配节点: {chosen_key}", "INFO")
+
+            # ========================================================
+            # 🔥 修改点 2: 将 "IP:Port" 存入数据库
+            # ========================================================
             if conv:
                 if not conv.session_metadata:
                     conv.session_metadata = {}
+                # 存入唯一 Key
+                conv.session_metadata["assigned_node_key"] = chosen_key
+                # 同时也更新一下旧字段，方便人眼看 (可选)
                 conv.session_metadata["assigned_node"] = target_ip
+
                 db.add(conv)
                 db.commit()
 
@@ -157,7 +169,7 @@ def get_target_url(db, conversation_id):
     except Exception as e:
         debug_log(f"❌ 服务发现处理异常: {e}", "ERROR")
         import traceback
-        traceback.print_exc()  # 打印完整堆栈，方便排查
+        traceback.print_exc()
         return None
 
 def process_message(message_id, message_data, check_idempotency=True):
