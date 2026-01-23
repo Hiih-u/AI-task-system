@@ -5,6 +5,9 @@ import time
 import socket
 from pathlib import Path
 from datetime import datetime
+import random
+
+import nacos
 from requests.exceptions import RequestException, Timeout, ConnectTimeout
 import redis
 import requests
@@ -29,7 +32,11 @@ else:
 # --- 2. 全局配置 ---
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-GEMINI_SERVICE_URL = os.getenv("GEMINI_SERVICE_URL", "http://192.168.202.155:61028/v1/chat/completions")
+
+NACOS_SERVER_ADDR = os.getenv("NACOS_SERVER_ADDR", "127.0.0.1:8848")
+NACOS_NAMESPACE = ""
+SERVICE_NAME = "gemini-service"
+
 DEBUG = True
 
 # Stream 配置
@@ -42,6 +49,13 @@ if not worker_identity:
     worker_identity = f"{socket.gethostname()}-{os.getpid()}"
     print(f"⚠️ 警告: 未配置 WORKER_ID，使用随机ID: {worker_identity}")
 CONSUMER_NAME = f"worker-{worker_identity}"
+
+try:
+    nacos_client = nacos.NacosClient(NACOS_SERVER_ADDR, namespace=NACOS_NAMESPACE)
+    debug_log(f"✅ Nacos 客户端已连接: {NACOS_SERVER_ADDR}", "INFO")
+except Exception as e:
+    debug_log(f"❌ Nacos 连接失败: {e}", "ERROR")
+    nacos_client = None
 
 # 初始化 Redis 连接
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
@@ -57,6 +71,94 @@ def init_stream():
             debug_log(f"消费者组 {GROUP_NAME} 已存在", "INFO")
         else:
             raise e
+
+
+def get_target_url(db, conversation_id):
+    """
+    🎯 核心路由逻辑：实现会话粘性 (Sticky Session)
+    """
+    if not nacos_client:
+        debug_log("❌ Nacos 客户端未初始化", "ERROR")
+        return None
+
+    try:
+        # 1. 获取实例
+        res = nacos_client.list_naming_instance(SERVICE_NAME, healthy_only=True)
+
+        # 🔥🔥🔥 调试日志：看看 Nacos 到底返回了什么
+        # debug_log(f"🔍 Nacos 返回原始数据: {type(res)} - {res}", "DEBUG")
+
+        # 2. 兼容性处理：如果是字典，尝试提取 'hosts' 字段
+        instances = []
+        if isinstance(res, dict):
+            instances = res.get('hosts', [])
+        elif isinstance(res, list):
+            instances = res
+        else:
+            debug_log(f"❌ Nacos 返回数据格式异常: {type(res)}", "ERROR")
+            return None
+
+        # 3. 再次检查列表是否为空
+        if not instances:
+            debug_log(f"⚠️ Nacos 中没有找到健康实例 (Namespace='{NACOS_NAMESPACE}', Service='{SERVICE_NAME}')",
+                      "WARNING")
+            return None
+
+        # 4. 提取健康 IP 映射表 (IP -> 实例对象)
+        # 注意：这里加了 try-except 防止某个实例数据缺字段导致整个崩掉
+        healthy_map = {}
+        for ins in instances:
+            try:
+                if isinstance(ins, dict) and 'ip' in ins and 'port' in ins:
+                    healthy_map[ins['ip']] = ins
+            except Exception as e:
+                debug_log(f"⚠️ 跳过异常实例数据: {ins} - {e}", "WARNING")
+
+        target_ip = None
+        target_port = 8000
+
+        # 5. 会话粘性逻辑 (优先复用旧节点)
+        conv = None
+        if conversation_id:
+            conv = db.query(models.Conversation).filter(
+                models.Conversation.conversation_id == conversation_id
+            ).first()
+
+            if conv and conv.session_metadata:
+                last_ip = conv.session_metadata.get("assigned_node")
+                # 检查旧 IP 是否在健康列表中
+                if last_ip and last_ip in healthy_map:
+                    target_ip = last_ip
+                    target_port = healthy_map[last_ip]['port']
+                    debug_log(f"🔗 [会话粘性] 复用旧节点: {target_ip}:{target_port}", "INFO")
+
+        # 6. 负载均衡 (随机选择)
+        if not target_ip:
+            if not healthy_map:
+                debug_log("❌ 有效实例列表为空", "ERROR")
+                return None
+
+            # 从 healthy_map 的 values (实例对象列表) 中随机选一个
+            chosen = random.choice(list(healthy_map.values()))
+            target_ip = chosen['ip']
+            target_port = chosen['port']
+            debug_log(f"🎲 [新分配] 分配新节点: {target_ip}:{target_port}", "INFO")
+
+            # 记录到数据库
+            if conv:
+                if not conv.session_metadata:
+                    conv.session_metadata = {}
+                conv.session_metadata["assigned_node"] = target_ip
+                db.add(conv)
+                db.commit()
+
+        return f"http://{target_ip}:{target_port}/v1/chat/completions"
+
+    except Exception as e:
+        debug_log(f"❌ 服务发现处理异常: {e}", "ERROR")
+        import traceback
+        traceback.print_exc()  # 打印完整堆栈，方便排查
+        return None
 
 def process_message(message_id, message_data, check_idempotency=True):
     """
@@ -101,21 +203,22 @@ def process_message(message_id, message_data, check_idempotency=True):
             "messages": [{"role": "user", "content": prompt}]
         }
 
+        target_url = get_target_url(db, conversation_id)
+
+        if not target_url:
+            error_msg = "无法获取有效的 Gemini 服务地址 (Nacos Empty)"
+            mark_task_failed(db, task_id, error_msg)
+            redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
+            return
+
+        debug_log(f"发送请求到: {target_url}", "REQUEST")
+
+        # 发送请求 (不需要再传 X-Conversation-ID 给 Nginx 了，因为我们直连了)
+        headers = {"Content-Type": "application/json"}
+
         start_time = time.time()
+        response = requests.post(target_url, json=payload, headers=headers, timeout=120)
 
-        # =========================================================
-        # ⚡ 优化点 1：超时设置 (timeout=120)
-        # =========================================================
-        # 1. 构造 Headers
-        # 如果没有 ID (新对话)，就填个默认值，Nginx 会把它分配给任意节点
-        headers = {
-            "Content-Type": "application/json",
-            "X-Conversation-ID": str(conversation_id) if conversation_id else "new-session"
-        }
-
-        # 2. 发送请求时带上 headers
-        debug_log(f"发送请求到 Nginx, Conversation-ID: {headers['X-Conversation-ID']}", "INFO")
-        response = requests.post(GEMINI_SERVICE_URL, json=payload, headers=headers, timeout=120)
 
         if response.status_code == 200:
             # === HTTP 成功，但需检查业务内容 ===
