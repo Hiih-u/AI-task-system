@@ -13,7 +13,7 @@ from shared import models
 from shared.database import SessionLocal
 from shared.models import TaskStatus
 from shared.utils.logger import log_error
-from shared.utils.task_helper import debug_log, mark_task_failed, claim_task
+from shared.utils.task_helper import debug_log, mark_task_failed, claim_task, recover_pending_tasks
 
 # --- 1. 环境配置 ---
 current_file_path = Path(__file__).resolve()
@@ -182,27 +182,19 @@ def process_message(message_id, message_data, check_idempotency=True):
         db.close()
 
 
-def recover_pending_tasks():
-    try:
-        response = redis_client.xreadgroup(
-            GROUP_NAME, CONSUMER_NAME, {STREAM_KEY: '0'}, count=20, block=None
-        )
-        if response:
-            stream_name, messages = response[0]
-            if messages:
-                debug_log(f"♻️  正在恢复 {len(messages)} 个 DeepSeek 挂起任务...", "WARNING")
-                for message_id, message_data in messages:
-                    process_message(message_id, message_data, check_idempotency=True)
-    except Exception as e:
-        debug_log(f"恢复任务失败: {e}", "ERROR")
-
 
 def start_worker():
     debug_log("=" * 40, "INFO")
     debug_log(f"🚀 DeepSeek Worker 启动 | 监听: {STREAM_KEY}", "INFO")
 
     init_stream()
-    recover_pending_tasks()
+    recover_pending_tasks(
+        redis_client=redis_client,
+        stream_key=STREAM_KEY,
+        group_name=GROUP_NAME,
+        consumer_name=CONSUMER_NAME,
+        process_callback=process_message  # <--- 函数作为参数传递
+    )
 
     while True:
         try:

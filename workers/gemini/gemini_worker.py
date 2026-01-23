@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 # 导入共享模块
 from shared import models, database
 from shared.models import TaskStatus
-from shared.utils.task_helper import log_error, debug_log, mark_task_failed, claim_task
+from shared.utils.task_helper import log_error, debug_log, mark_task_failed, claim_task, recover_pending_tasks
 
 # --- 1. 环境配置与加载 ---
 current_file_path = Path(__file__).resolve()
@@ -220,32 +220,6 @@ def process_message(message_id, message_data, check_idempotency=True):
         db.close()
 
 
-def recover_pending_tasks():
-    """
-    启动时恢复逻辑
-    只处理那些 "Worker 突然断电导致没来得及 ACK" 的任务
-    """
-    try:
-        # 获取所有已认领但未 ACK 的消息
-        response = redis_client.xreadgroup(
-            GROUP_NAME, CONSUMER_NAME, {STREAM_KEY: '0'}, count=50, block=None
-        )
-
-        if response:
-            stream_name, messages = response[0]
-            if messages:
-                debug_log(f"♻️  Worker 重启，正在恢复 {len(messages)} 个挂起任务...", "WARNING")
-
-                for message_id, message_data in messages:
-                    # 重新处理 (check_idempotency=True 会拦截已失败/已成功的任务)
-                    # 这里的逻辑是：不管之前失败了几次，只要还在 Pending 里，就再试一次。
-                    # 如果这次处理因为 Exception 崩溃了并被捕获，process_message 里会执行 ACK，循环结束。
-                    process_message(message_id, message_data, check_idempotency=True)
-
-                debug_log("✅ 挂起任务处理完毕", "INFO")
-    except Exception as e:
-        debug_log(f"恢复 Pending 任务失败: {e}", "ERROR")
-
 
 def start_worker():
     debug_log("=" * 40, "INFO")
@@ -254,7 +228,13 @@ def start_worker():
     init_stream()
 
     # 1. 仅在启动时检查一次
-    recover_pending_tasks()
+    recover_pending_tasks(
+        redis_client=redis_client,
+        stream_key=STREAM_KEY,
+        group_name=GROUP_NAME,
+        consumer_name=CONSUMER_NAME,
+        process_callback=process_message  # <--- 函数作为参数传递
+    )
 
     debug_log("进入主循环监听...", "INFO")
 
