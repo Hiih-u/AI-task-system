@@ -1,4 +1,5 @@
 import json
+from datetime import time
 
 import redis
 from requests import Session
@@ -106,6 +107,16 @@ def recover_pending_tasks(
                     for message_id, message_data in messages:
                         # --- 1. 尝试解析并修复僵尸状态 ---
                         try:
+                            # Redis 的 message_id (如 "1678888888888-0") 前半部分是时间戳(毫秒)
+                            msg_timestamp = int(message_id.decode().split('-')[0])
+                            current_time = int(time.time() * 1000)
+
+                            # 如果消息超过 60 秒（即时聊天的容忍度），直接丢弃
+                            if current_time - msg_timestamp > 60000:
+                                print(f"⏰ 丢弃过期任务: {message_id} (超时 > 60s)")
+                                redis_client.xack(stream_key, group_name, message_id)
+                                continue  # 跳过，不执行
+
                             payload_bytes = message_data.get(b'payload')
                             if payload_bytes:
                                 task_data = json.loads(payload_bytes)
