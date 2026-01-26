@@ -10,7 +10,6 @@ WORKDIR /app
 COPY requirements_linux.txt .
 
 # 安装依赖
-# --no-cache-dir 减小镜像体积
 RUN pip install --no-cache-dir -r requirements_linux.txt
 
 # --- 2. 复制源代码 ---
