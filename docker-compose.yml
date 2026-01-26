@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   redis:
+    container_name: redis
     image: redis:7.2-alpine
     restart: always
     ports:
@@ -26,6 +27,7 @@ services:
 
 # === Gemini Worker 服务 ===
   gemini-worker-1:
+    container_name: gemini-worker-1
     build:
       context: .
       dockerfile: workers/gemini/Dockerfile
@@ -44,6 +46,7 @@ services:
       - redis
 
   gemini-worker-2:
+    container_name: gemini-worker-2
     build:
       context: .
       dockerfile: workers/gemini/Dockerfile
