@@ -136,20 +136,6 @@ def recover_pending_tasks(
         consumer_name: str,
         process_callback
 ):
-    """
-    🔥 通用恢复逻辑：处理 Worker 崩溃后遗留的 Pending 任务
-
-    核心功能：
-    1. 从 Redis PEL 读取未确认消息
-    2. 关键修复：将数据库中卡在 PROCESSING 的状态重置为 PENDING
-    3. 调用传入的 process_callback 函数重新执行任务
-
-    :param redis_client: Redis 客户端实例
-    :param stream_key: 队列名称 (如 gemini_stream)
-    :param group_name: 消费者组名称
-    :param consumer_name: 消费者名称
-    :param process_callback: 具体的业务处理函数，签名需为 func(msg_id, msg_data, check_idempotency)
-    """
     try:
         # 获取所有已认领但未 ACK 的消息 (Start from '0')
         response = redis_client.xreadgroup(
@@ -198,7 +184,7 @@ def recover_pending_tasks(
                                         debug_log(f"🔧 [自愈] 修复僵尸任务: {task_id} PROCESSING -> PENDING", "INFO")
 
                         except Exception as e:
-                            debug_log(f"解析恢复消息失败: {e}", "ERROR")
+                            debug_log(f"预检查解析失败 (将由 Worker 自动处理): {e}", "WARNING")
                             # 解析都失败了，通常建议直接 ACK 跳过，防止死循环
                             # redis_client.xack(stream_key, group_name, message_id)
                             # continue
