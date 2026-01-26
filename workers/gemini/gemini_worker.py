@@ -16,7 +16,8 @@ from dotenv import load_dotenv
 # 导入共享模块
 from shared import models, database
 from shared.models import TaskStatus
-from shared.utils.worker_utils import debug_log, mark_task_failed, claim_task, recover_pending_tasks, parse_and_validate
+from shared.utils.worker_utils import debug_log, mark_task_failed, claim_task, recover_pending_tasks, \
+    parse_and_validate, process_ai_result
 
 # --- 1. 环境配置与加载 ---
 current_file_path = Path(__file__).resolve()
@@ -38,8 +39,6 @@ NACOS_NAMESPACE = "public"
 SERVICE_NAME = "gemini-service"
 
 DEBUG = True
-
-# Stream 配置
 STREAM_KEY = "gemini_stream"
 GROUP_NAME = "gemini_workers_group"
 
@@ -60,6 +59,14 @@ except Exception as e:
 # 初始化 Redis 连接
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
 
+GEMINI_REFUSAL_KEYWORDS = [
+    "您登录了吗",
+    "无法为您创建任何图片",
+    "地区尚未开通",
+    "无法创建图片",
+    "I cannot create images",
+    "yet available to create images"
+]
 
 def init_stream():
     """初始化 Stream 和 消费者组"""
@@ -235,50 +242,17 @@ def process_message(message_id, message_data, check_idempotency=True):
             # === HTTP 成功，但需检查业务内容 ===
             res_json = response.json()
             ai_text = res_json['choices'][0]['message']['content']
+            cost_time = round(time.time() - start_time, 2)
 
-            # =========================================================
-            # ⚡ 优化点 2：软拒绝检测 (Soft Rejection)
-            # 检测 Google 是否返回了“未登录/无法生成图片”的拒绝话术
-            # =========================================================
-            refusal_keywords = [
-                "您登录了吗",
-                "无法为您创建任何图片",
-                "地区尚未开通",
-                "无法创建图片",
-                "I cannot create images",
-                "yet available to create images"
-            ]
-
-            # 检查回复中是否包含上述任意关键词
-            is_refusal = any(keyword in ai_text for keyword in refusal_keywords)
-
-            if is_refusal:
-                # 命中拒绝关键词 -> 视为失败
-                error_msg = f"AI 服务出错了: {ai_text}"
-                debug_log(f"🛑 捕获到软拒绝: {error_msg}", "ERROR")
-
-                # 记录详细日志供管理员排查
-
-                # 标记数据库为 FAILED，并将 AI 的拒绝理由展示给用户
-                mark_task_failed(db, task_id, f"图片生成失败: {ai_text}")
-
-            else:
-                # 真正的成功
-                if not existing_task:
-                    existing_task = db.query(models.Task).filter(models.Task.task_id == task_id).first()
-
-                if existing_task:
-                    existing_task.response_text = ai_text
-                    existing_task.status = TaskStatus.SUCCESS
-                    existing_task.cost_time = round(time.time() - start_time, 2)
-
-                    conv = db.query(models.Conversation).filter(
-                        models.Conversation.conversation_id == conversation_id).first()
-                    if conv:
-                        conv.updated_at = datetime.now()
-
-                    db.commit()
-                    debug_log(f"任务完成: {task_id} (耗时: {existing_task.cost_time:.2f}s)", "SUCCESS")
+            # 🔥 核心修改：一行代码搞定 审查 + 保存 + 状态更新
+            process_ai_result(
+                db,
+                task_id,
+                ai_text,
+                cost_time,
+                conversation_id,
+                refusal_keywords=GEMINI_REFUSAL_KEYWORDS  # 传入由于 Gemini 特性的拒绝词
+            )
 
             # 无论成功还是被拦截，都 ACK 掉，避免重复消费
             redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
