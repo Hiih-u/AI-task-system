@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from shared import models
 from shared.database import SessionLocal
 from shared.models import TaskStatus
-from shared.utils.task_helper import debug_log, mark_task_failed, claim_task, recover_pending_tasks
+from shared.utils.worker_utils import debug_log, mark_task_failed, claim_task, recover_pending_tasks, parse_and_validate
 
 # --- 1. 环境配置 ---
 current_file_path = Path(__file__).resolve()
@@ -55,22 +55,24 @@ def init_stream():
 def process_message(message_id, message_data, check_idempotency=True):
     """处理单条消息"""
     db = SessionLocal()
-    task_id = "UNKNOWN"
+    task_data = parse_and_validate(
+        redis_client, STREAM_KEY, GROUP_NAME, message_id, message_data, CONSUMER_NAME
+    )
+
+    # 如果返回 None，说明是烂消息且已经被 helper 处理掉了，直接收工
+    if not task_data:
+        db.close()
+        return
+
+    # =========================================================
+    # 2. 提取数据 (此时 task_data 肯定是安全的字典)
+    # =========================================================
+    task_id = task_data.get('task_id')
+    conversation_id = task_data.get('conversation_id')
+    prompt = task_data.get('prompt')
+    model = task_data.get('model')
 
     try:
-        # --- 1. 解析 Redis 消息 ---
-        payload_bytes = message_data.get(b'payload')
-        if not payload_bytes:
-            redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
-            return
-
-        task_data = json.loads(payload_bytes)
-        task_id = task_data.get('task_id')
-        conversation_id = task_data.get('conversation_id')
-        prompt = task_data.get('prompt')
-        # 允许前端指定具体模型版本，或者由 Worker 兜底默认值
-        model = task_data.get('model', "deepseek-r1")
-
         # --- 幂等性检查 ---
         if check_idempotency:
             # 直接调用公共函数尝试抢占
@@ -143,11 +145,6 @@ def process_message(message_id, message_data, check_idempotency=True):
             debug_log(error_msg, "ERROR")
             mark_task_failed(db, task_id, error_msg)
             redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
-
-
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        debug_log(f"数据解析失败: {e}", "ERROR")
-        redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
     except ConnectTimeout:
         error_msg = "无法连接到 AI 服务 (Connection Timeout)。请检查 API 地址或防火墙配置。"

@@ -8,6 +8,67 @@ from .logger import debug_log, log_error
 from shared.models import TaskStatus
 from ..database import SessionLocal
 
+# --- 1. 死信队列逻辑 (新增) ---
+DLQ_STREAM_KEY = "sys_dead_letters"
+
+def send_to_dlq(redis_client, message_id, raw_payload, error_msg, source="Unknown"):
+    """
+    💀 将烂消息移入死信队列，并 ACK 丢弃
+    """
+    try:
+        # 确保 message_id 是字符串
+        if isinstance(message_id, bytes):
+            message_id = message_id.decode()
+
+        # 确保 payload 是字符串
+        payload_str = "None"
+        if raw_payload:
+            payload_str = raw_payload.decode('utf-8', errors='ignore') if isinstance(raw_payload, bytes) else str(
+                raw_payload)
+
+        dead_msg = {
+            "original_id": message_id,
+            "error": str(error_msg),
+            "source_worker": source,
+            "failed_at": str(int(time.time())),
+            "raw_payload": payload_str
+        }
+
+        # 1. 入死信
+        redis_client.xadd(DLQ_STREAM_KEY, dead_msg, maxlen=10000)
+        debug_log(f"💀 已移入死信队列: {message_id}", "WARNING")
+
+    except Exception as e:
+        debug_log(f"写入死信队列失败: {e}", "ERROR")
+
+
+# --- 2. 安全解析逻辑 (新增) ---
+def parse_and_validate(redis_client, stream_key, group_name, message_id, message_data, consumer_name):
+    """
+    🛡️ 通用解析函数：
+    - 如果解析成功，返回 task_data (dict)
+    - 如果解析失败（JSON错误/空消息），自动入死信 + ACK，并返回 None
+    """
+    payload_bytes = message_data.get(b'payload')
+
+    # 1. 检查空消息
+    if not payload_bytes:
+        send_to_dlq(redis_client, message_id, b"", "Empty Payload", consumer_name)
+        redis_client.xack(stream_key, group_name, message_id)
+        return None
+
+    try:
+        # 2. 尝试解析 JSON
+        task_data = json.loads(payload_bytes)
+        return task_data
+
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        # 3. 解析失败 -> 自动处理后事 (DLQ + ACK)
+        debug_log(f"数据解析失败: {e}", "ERROR")
+        send_to_dlq(redis_client, message_id, payload_bytes, f"JSON Error: {e}", consumer_name)
+        redis_client.xack(stream_key, group_name, message_id)
+        return None
+
 
 def mark_task_failed(db, task_id, error_msg):
     """

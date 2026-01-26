@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 # 导入共享模块
 from shared import models, database
 from shared.models import TaskStatus
-from shared.utils.task_helper import debug_log, mark_task_failed, claim_task, recover_pending_tasks
+from shared.utils.worker_utils import debug_log, mark_task_failed, claim_task, recover_pending_tasks, parse_and_validate
 
 # --- 1. 环境配置与加载 ---
 current_file_path = Path(__file__).resolve()
@@ -175,22 +175,23 @@ def process_message(message_id, message_data, check_idempotency=True):
     处理单条消息的核心逻辑 (优化版：超时熔断 + 软拒绝检测)
     """
     db = database.SessionLocal()
-    task_id = "UNKNOWN"
+    task_data = parse_and_validate(
+        redis_client, STREAM_KEY, GROUP_NAME, message_id, message_data, CONSUMER_NAME
+    )
+
+    # 如果返回 None，说明是烂消息且已经被 helper 处理掉了，直接收工
+    if not task_data:
+        db.close()
+        return
+
+    task_id = task_data.get('task_id')
+    conversation_id = task_data.get('conversation_id')
+    prompt = task_data.get('prompt')
+    model = task_data.get('model')
+
     existing_task = None
 
     try:
-        # --- 1. 解析 Redis 消息 ---
-        payload_bytes = message_data.get(b'payload')
-        if not payload_bytes:
-            debug_log(f"消息格式错误 (缺 payload): {message_data}", "ERROR")
-            redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
-            return
-
-        task_data = json.loads(payload_bytes)
-        task_id = task_data.get('task_id')
-        conversation_id = task_data.get('conversation_id')
-        prompt = task_data.get('prompt')
-        model = task_data.get('model')
 
         # =========================================================
         # 🔥 幂等性检查
@@ -288,10 +289,6 @@ def process_message(message_id, message_data, check_idempotency=True):
             debug_log(error_msg, "ERROR")
             mark_task_failed(db, task_id, error_msg)
             redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
-
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        debug_log(f"数据解析失败: {e}", "ERROR")
-        redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
 
     except ConnectTimeout:
         error_msg = "无法连接到 AI 服务 (Connection Timeout)。请检查 API 地址或防火墙配置。"

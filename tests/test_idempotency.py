@@ -11,7 +11,7 @@ sys.path.append(os.getcwd())
 from shared.database import SessionLocal
 from shared import models
 from shared.models import TaskStatus
-from shared.utils.task_helper import claim_task
+from shared.utils.worker_utils import claim_task
 
 
 def setup_test_task():
