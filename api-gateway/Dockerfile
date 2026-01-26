@@ -10,7 +10,7 @@ COPY requirements.txt .
 
 # 安装依赖
 # --no-cache-dir 减小镜像体积
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements_linux.txt
 
 # --- 2. 复制源代码 ---
 # 关键：复制 shared 文件夹，因为 server.py 依赖它 (from shared import ...)
