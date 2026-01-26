@@ -231,7 +231,6 @@ def process_message(message_id, message_data, check_idempotency=True):
 
         debug_log(f"发送请求到: {target_url}", "REQUEST")
 
-        # 发送请求 (不需要再传 X-Conversation-ID 给 Nginx 了，因为我们直连了)
         headers = {"Content-Type": "application/json"}
 
         start_time = time.time()

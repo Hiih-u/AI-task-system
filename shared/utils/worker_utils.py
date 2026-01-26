@@ -229,7 +229,6 @@ def finish_task_success(db, task_id, response_text, cost_time, conversation_id=N
                 if conv:
                     conv.updated_at = datetime.now()
 
-            # 4. 提交
             db.commit()
             debug_log(f"✅ 任务完成: {task_id} (耗时: {cost_time}s)", "SUCCESS")
             return True
