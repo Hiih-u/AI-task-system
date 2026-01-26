@@ -272,6 +272,28 @@ def get_history(conversation_id: str, db: Session = Depends(get_db)):
     return messages
 
 
+@app.get("/v1/conversations")
+def list_conversations(limit: int = 20, db: Session = Depends(get_db)):
+    """
+    获取最近的会话列表，按更新时间倒序排列
+    """
+    conversations = db.query(models.Conversation) \
+        .order_by(models.Conversation.updated_at.desc()) \
+        .limit(limit) \
+        .all()
+
+    return {
+        "conversations": [
+            {
+                "conversation_id": c.conversation_id,
+                "title": c.title or "新对话",  # 如果没有标题，显示默认文案
+                "modified": c.updated_at
+            }
+            for c in conversations
+        ]
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
 

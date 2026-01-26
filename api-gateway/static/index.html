@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gemini Chat - AI 对话助手</title>
+    <title>Gemini Chat</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -24,220 +24,173 @@
             0%, 60%, 100% { opacity: 0.3; }
             30% { opacity: 1; }
         }
-        .markdown-body img {
-            max-width: 100%;
-            border-radius: 0.5rem;
-            margin: 1rem 0;
-        }
-        .markdown-body pre {
-            background: #1f2937;
-            padding: 1rem;
-            border-radius: 0.5rem;
-            overflow-x: auto;
-            color: #e5e7eb;
-        }
-        .markdown-body code {
-            background: #374151;
-            padding: 0.2rem 0.4rem;
-            border-radius: 0.25rem;
-            font-size: 0.875rem;
-            color: #e5e7eb;
-        }
-        .markdown-body p {
-            margin-bottom: 0.5rem;
-        }
+        /* Markdown 样式微调 */
+        .markdown-body img { max-width: 100%; border-radius: 0.5rem; margin: 1rem 0; }
+        .markdown-body pre { background: #1f2937; color: #f3f4f6; padding: 1rem; border-radius: 0.5rem; overflow-x: auto; margin: 0.5rem 0; }
+        .markdown-body code { background: #374151; color: #e5e7eb; padding: 0.2rem 0.4rem; border-radius: 0.25rem; font-size: 0.875rem; }
+        .markdown-body p { margin-bottom: 0.5rem; }
+        .markdown-body ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 0.5rem; }
+        .markdown-body ol { list-style-type: decimal; padding-left: 1.5rem; margin-bottom: 0.5rem; }
     </style>
 </head>
-<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen">
-    <div class="container mx-auto max-w-6xl h-screen flex flex-col p-4">
+<body class="bg-gray-100 min-h-screen flex flex-col h-screen">
 
-        <header class="bg-white rounded-t-2xl shadow-lg p-4 flex items-center justify-between">
-            <div class="flex items-center space-x-3">
-                <div class="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center">
-                    <i class="fas fa-robot text-white text-xl"></i>
-                </div>
-                <div>
-                    <h1 class="text-xl font-bold text-gray-800">AI Task System</h1>
-                    <p class="text-xs text-gray-500">企业级异步对话架构</p>
-                </div>
+    <header class="bg-white shadow-sm p-4 flex items-center justify-between z-10">
+        <div class="flex items-center space-x-3">
+            <div class="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-lg flex items-center justify-center shadow-md">
+                <i class="fas fa-robot text-white text-xl"></i>
             </div>
+            <div>
+                <h1 class="text-xl font-bold text-gray-800 tracking-tight">Gemini Chat</h1>
+            </div>
+        </div>
 
-            <div class="flex items-center space-x-2">
-                <select id="modelSelect" class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+        <div class="flex items-center space-x-2">
+            <div class="relative">
+                <select id="modelSelect" class="appearance-none bg-gray-50 border border-gray-300 text-gray-700 py-2 px-4 pr-8 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer">
                     <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                     <option value="deepseek-r1:1.5b">DeepSeek R1</option>
                     <option value="qwen2.5:7b">Qwen 2.5</option>
-                    <option value="gemini-2.5-flash, deepseek-r1:1.5b">Gemini + DeepSeek (Fan-out)</option>
+                    <option value="gemini-2.5-flash, deepseek-r1:1.5b">⚡ 扇出模式 (Gemini + DeepSeek)</option>
                 </select>
+                <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                    <i class="fas fa-chevron-down text-xs"></i>
+                </div>
+            </div>
 
-                <button onclick="newChat()" class="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm">
-                    <i class="fas fa-plus mr-1"></i> 新对话
+            <button onclick="newChat()" class="flex items-center px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition shadow-sm text-sm font-medium">
+                <i class="fas fa-plus mr-2"></i> 新对话
+            </button>
+        </div>
+    </header>
+
+    <div class="flex-1 flex overflow-hidden relative">
+        <aside id="historySidebar" class="w-80 bg-gray-50 border-r border-gray-200 flex flex-col hidden md:flex absolute left-0 top-0 bottom-0 z-20 md:static shadow-xl md:shadow-none transition-all duration-300 transform translate-x-0">
+            <div class="p-4 border-b border-gray-200 flex items-center justify-between">
+                <h2 class="font-semibold text-gray-700">历史对话</h2>
+                <button onclick="toggleHistory()" class="md:hidden text-gray-500 hover:text-gray-700">
+                    <i class="fas fa-times"></i>
                 </button>
+            </div>
+            <div id="historyList" class="flex-1 overflow-y-auto p-3 space-y-2"></div>
+        </aside>
 
-                </div>
-        </header>
-
-        <div class="flex-1 flex bg-white shadow-lg overflow-hidden">
-
-            <div class="flex-1 flex flex-col">
-                <div id="messagesContainer" class="flex-1 overflow-y-auto p-6 space-y-4">
-                    <div class="text-center py-12 text-gray-400">
-                        <i class="fas fa-comments text-6xl mb-4"></i>
-                        <p class="text-lg">开始你的 AI 对话之旅</p>
-                        <p class="text-sm mt-2">支持多模型并行调用 (Fan-out)</p>
+        <main class="flex-1 flex flex-col bg-white relative w-full">
+            <div id="messagesContainer" class="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 scroll-smooth">
+                <div class="h-full flex flex-col items-center justify-center text-gray-400">
+                    <div class="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-6">
+                        <i class="fas fa-comments text-4xl text-gray-300"></i>
                     </div>
+                    <h2 class="text-xl font-semibold text-gray-600 mb-2">开始新的对话</h2>
+                    <p class="text-sm">选择模型，输入问题，体验多模型并发处理。</p>
                 </div>
+            </div>
 
-                <div class="border-t border-gray-200 p-4 bg-gray-50">
-                    <div class="flex items-end space-x-2">
+            <div class="border-t border-gray-200 bg-gray-50 p-4">
+                <div class="max-w-4xl mx-auto">
+                    <div id="filePreview" class="mb-3 hidden flex flex-wrap gap-2"></div>
+
+                    <div class="flex items-end gap-2 bg-white p-2 rounded-xl border border-gray-300 shadow-sm focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition-all">
+                        <label class="cursor-pointer p-2 text-gray-400 hover:text-blue-500 hover:bg-gray-100 rounded-lg transition">
+                            <i class="fas fa-paperclip text-lg"></i>
+                            <input type="file" id="fileInput" multiple class="hidden" onchange="handleFileSelect(event)">
+                        </label>
+
                         <textarea
                             id="messageInput"
-                            placeholder="输入消息... (Shift+Enter 换行，Enter 发送)"
-                            class="flex-1 px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
                             rows="1"
+                            class="flex-1 max-h-32 py-2 px-2 bg-transparent border-none focus:ring-0 resize-none text-gray-700 placeholder-gray-400 leading-normal"
+                            placeholder="输入消息... (Shift+Enter 换行)"
+                            oninput="autoResize(this)"
                             onkeydown="handleKeyPress(event)"
                         ></textarea>
 
                         <button
-                            onclick="sendMessage()"
                             id="sendButton"
-                            class="px-6 py-3 bg-gradient-to-r from-blue-500 to-indigo-600 text-white rounded-lg hover:from-blue-600 hover:to-indigo-700 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                            onclick="sendMessage()"
+                            class="p-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition flex-shrink-0 w-10 h-10 flex items-center justify-center"
                         >
                             <i class="fas fa-paper-plane"></i>
                         </button>
                     </div>
-                </div>
-            </div>
-
-            <div id="historySidebar" class="w-80 border-l border-gray-200 bg-gray-50 hidden overflow-y-auto">
-                <div class="p-4">
-                    <div class="flex items-center justify-between mb-4">
-                        <h2 class="text-lg font-bold text-gray-800">对话历史</h2>
-                        <button onclick="toggleHistory()" class="text-gray-500 hover:text-gray-700">
-                            <i class="fas fa-times"></i>
-                        </button>
+                    <div class="text-center mt-2">
+                        <p class="text-xs text-gray-400">AI 内容由大模型生成，请仔细甄别。</p>
                     </div>
-                    <div id="historyList" class="space-y-2"></div>
                 </div>
             </div>
-        </div>
-
-        <footer class="bg-white rounded-b-2xl shadow-lg p-3 text-center text-xs text-gray-500">
-            <p>Powered by <span class="font-semibold text-blue-600">Async Task System</span> |
-            <span id="statusIndicator" class="inline-flex items-center">
-                <span class="w-2 h-2 bg-gray-300 rounded-full mr-1"></span> 检查中...
-            </span>
-            </p>
-        </footer>
+        </main>
     </div>
 
+    <footer class="bg-white border-t border-gray-200 py-1 px-4 text-xs text-gray-500 flex justify-between items-center z-10">
+        <span>Powered by FastAPI & Redis Streams</span>
+        <span id="statusIndicator" class="flex items-center gap-1.5">Checking...</span>
+    </footer>
+
     <script>
-        // 全局变量
+        const API_BASE = window.location.origin;
         let currentConversationId = null;
-        const API_BASE = window.location.origin; // 自动获取当前域名端口
 
-        // 状态常量 (对应后端 TaskStatus)
-        const TASK_STATUS = {
-            PENDING: 0,
-            SUCCESS: 1,
-            FAILED: 2,
-            PROCESSING: 3
-        };
+        const TASK_STATUS = { PENDING: 0, SUCCESS: 1, FAILED: 2, PROCESSING: 3 };
 
-        // 初始化
         document.addEventListener('DOMContentLoaded', () => {
             checkHealth();
-            autoResizeTextarea();
+            loadHistory();
         });
 
-        // 健康检查
-        async function checkHealth() {
-            try {
-                const response = await fetch(`${API_BASE}/health`);
-                const data = await response.json();
-                document.getElementById('statusIndicator').innerHTML = `
-                    <span class="w-2 h-2 bg-green-500 rounded-full mr-1"></span>
-                    Redis: ${data.redis ? '在线' : '异常'}
-                `;
-            } catch (error) {
-                document.getElementById('statusIndicator').innerHTML = `
-                    <span class="w-2 h-2 bg-red-500 rounded-full mr-1"></span> 服务离线
-                `;
-            }
+        function toggleHistory() {
+            document.getElementById('historySidebar').classList.toggle('hidden');
         }
 
-        // 自动调整文本框高度
-        function autoResizeTextarea() {
-            const textarea = document.getElementById('messageInput');
-            textarea.addEventListener('input', function() {
-                this.style.height = 'auto';
-                this.style.height = Math.min(this.scrollHeight, 200) + 'px';
-            });
-        }
-
-        // 处理键盘事件
-        function handleKeyPress(event) {
-            if (event.key === 'Enter' && !event.shiftKey) {
-                event.preventDefault();
-                sendMessage();
-            }
-        }
-
-        // --- 核心逻辑：发送消息与轮询 ---
+        // === 消息发送 ===
         async function sendMessage() {
             const input = document.getElementById('messageInput');
             const message = input.value.trim();
             const modelConfig = document.getElementById('modelSelect').value;
+            const fileInput = document.getElementById('fileInput');
 
-            if (!message) return;
+            if (!message && fileInput.files.length === 0) return;
 
-            // 1. UI 状态更新
             const sendButton = document.getElementById('sendButton');
             sendButton.disabled = true;
             input.value = '';
             input.style.height = 'auto';
+            document.getElementById('filePreview').innerHTML = '';
+            document.getElementById('filePreview').classList.add('hidden');
+            fileInput.value = '';
 
-            // 显示用户消息
             addMessage('user', message);
-
-            // 显示加载动画 (占位符)
-            const loadingId = addMessage('assistant', '<div class="typing-indicator"><span>●</span><span>●</span><span>●</span></div>', true);
+            const loadingId = addMessage('assistant', '<div class="typing-indicator flex gap-1"><span>●</span><span>●</span><span>●</span></div>', true);
 
             try {
-                // 2. 提交任务到 API 网关
+                // 提交请求
                 const response = await fetch(`${API_BASE}/v1/chat/completions`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        prompt: message,
-                        model: modelConfig,
-                        conversation_id: currentConversationId
-                    })
+                    body: JSON.stringify({ prompt: message, model: modelConfig, conversation_id: currentConversationId })
                 });
 
                 if (!response.ok) throw new Error(`提交失败: ${response.status}`);
 
                 const data = await response.json();
                 const batchId = data.batch_id;
-                currentConversationId = data.conversation_id; // 保存会话ID
+                currentConversationId = data.conversation_id;
 
-                console.log(`✅ 任务已提交，Batch ID: ${batchId}，开始轮询...`);
-
-                // 3. 开始轮询结果 (Polling)
+                // 轮询结果 (支持增量显示)
                 pollBatchResult(batchId, loadingId);
 
             } catch (error) {
                 document.getElementById(loadingId).remove();
-                addMessage('error', '❌ 请求失败: ' + error.message);
+                addMessage('error', `❌ 发送失败: ${error.message}`);
                 sendButton.disabled = false;
             }
         }
 
-        // 轮询函数
+        // === 轮询结果 (增量显示逻辑) ===
         function pollBatchResult(batchId, loadingMsgId) {
             let attempts = 0;
-            const maxAttempts = 60; // 最多轮询 60 次 (60秒)
-            const interval = 1000;  // 1秒一次
+            const maxAttempts = 120;
+            const intervalTime = 1000;
+            const displayedTaskIds = new Set(); // 记录已显示的任务
 
             const timer = setInterval(async () => {
                 attempts++;
@@ -247,121 +200,194 @@
 
                     const batchData = await res.json();
 
-                    // 检查是否有任何任务完成 (SUCCESS 或 FAILED)
-                    // 这里我们简单处理：只要有一个任务完成，就显示结果。
-                    // 如果是 Fan-out (多模型)，你可能需要等待所有模型完成。
-                    // 这里演示：把所有已完成的结果拼接显示。
+                    // 1. 遍历并显示新完成的任务
+                    batchData.results.forEach(task => {
+                        if ((task.status === TASK_STATUS.SUCCESS || task.status === TASK_STATUS.FAILED)
+                            && !displayedTaskIds.has(task.task_id)) {
 
-                    const completedTasks = batchData.results.filter(
-                        t => t.status === TASK_STATUS.SUCCESS || t.status === TASK_STATUS.FAILED
-                    );
+                            displayedTaskIds.add(task.task_id); // 标记已显示
 
-                    const allFinished = batchData.results.length === completedTasks.length;
-
-                    if (completedTasks.length > 0 && allFinished) {
-                        clearInterval(timer);
-                        document.getElementById(loadingMsgId).remove();
-
-                        // 遍历所有结果并显示
-                        completedTasks.forEach(task => {
                             if (task.status === TASK_STATUS.SUCCESS) {
                                 let content = task.response_text;
-                                // 如果是多模型，加上模型名字前缀区分
                                 if (batchData.results.length > 1) {
-                                    content = `**[${task.model_name}]**:\n\n${content}`;
+                                    content = `**🤖 ${task.model_name}** (${task.cost_time}s):\n\n${content}`;
                                 }
                                 addMessage('assistant', content);
                             } else {
-                                addMessage('error', `❌ [${task.model_name}] 失败: ${task.error_msg}`);
+                                addMessage('error', `❌ [${task.model_name}] 任务失败: ${task.error_msg}`);
                             }
-                        });
+                        }
+                    });
 
-                        // 恢复按钮
+                    // 2. 检查是否全部完成
+                    const finishedCount = batchData.results.filter(
+                        t => t.status === TASK_STATUS.SUCCESS || t.status === TASK_STATUS.FAILED
+                    ).length;
+
+                    if (batchData.results.length === finishedCount) {
+                        clearInterval(timer);
+                        const loadingEl = document.getElementById(loadingMsgId);
+                        if (loadingEl) loadingEl.remove(); // 移除 Loading
+
                         document.getElementById('sendButton').disabled = false;
+                        loadHistory(); // 刷新左侧历史
                     }
-
-                    // 超时处理
-                    if (attempts >= maxAttempts) {
+                    else if (attempts >= maxAttempts) {
                         clearInterval(timer);
                         document.getElementById(loadingMsgId).remove();
-                        addMessage('error', '❌ 响应超时，任务仍在后台处理，请稍后刷新。');
+                        addMessage('error', '⚠️ 部分任务响应超时，请稍后查看历史。');
                         document.getElementById('sendButton').disabled = false;
                     }
 
                 } catch (e) {
-                    console.error("轮询出错:", e);
+                    console.error("Polling error:", e);
                 }
-            }, interval);
+            }, intervalTime);
         }
 
-        // 添加消息到界面
-        function addMessage(role, content, isLoading = false) {
-            const container = document.getElementById('messagesContainer');
-            const messageId = 'msg-' + Date.now() + Math.random().toString(36).substr(2, 9);
-
-            // 移除欢迎消息
-            const welcome = container.querySelector('.text-center');
-            if (welcome) welcome.remove();
-
-            const messageDiv = document.createElement('div');
-            messageDiv.id = messageId;
-            messageDiv.className = 'message-enter flex items-start space-x-3';
-
-            let bgColor, icon, textColor;
-            if (role === 'user') {
-                bgColor = 'bg-blue-500 text-white ml-auto';
-                icon = '<i class="fas fa-user"></i>';
-                textColor = 'text-white';
-            } else if (role === 'assistant') {
-                bgColor = 'bg-gray-100 text-gray-800';
-                icon = '<i class="fas fa-robot"></i>';
-                textColor = 'text-gray-800';
-            } else { // error
-                bgColor = 'bg-red-100 text-red-800';
-                icon = '<i class="fas fa-exclamation-triangle"></i>';
-                textColor = 'text-red-800';
+        // === 加载历史列表 ===
+        async function loadHistory() {
+            const listContainer = document.getElementById('historyList');
+            if (!listContainer.hasChildNodes()) {
+                listContainer.innerHTML = '<div class="text-center text-gray-400 py-4"><i class="fas fa-spinner fa-spin"></i></div>';
             }
 
-            // Markdown 解析
-            const parsedContent = isLoading ? content : marked.parse(content);
+            try {
+                const res = await fetch(`${API_BASE}/v1/conversations`);
+                const data = await res.json();
 
-            messageDiv.innerHTML = `
-                <div class="w-8 h-8 rounded-full ${role === 'user' ? 'bg-blue-600' : 'bg-gray-300'} flex items-center justify-center flex-shrink-0">
-                    ${icon}
-                </div>
-                <div class="flex-1 ${role === 'user' ? 'text-right' : ''}">
-                    <div class="inline-block ${bgColor} rounded-2xl px-4 py-3 max-w-3xl text-left">
-                        <div class="markdown-body ${textColor} text-sm">
-                            ${parsedContent}
+                if (!data.conversations || data.conversations.length === 0) {
+                    listContainer.innerHTML = '<div class="text-center text-gray-400 text-sm py-8">暂无历史记录</div>';
+                    return;
+                }
+
+                listContainer.innerHTML = data.conversations.map(conv => `
+                    <div onclick="loadConversation('${conv.conversation_id}')"
+                         class="group p-3 bg-white rounded-lg border border-gray-200 hover:border-blue-400 cursor-pointer transition relative mb-2 shadow-sm ${currentConversationId === conv.conversation_id ? 'border-blue-400 ring-1 ring-blue-100' : ''}">
+                        <div class="font-medium text-gray-800 truncate pr-6 text-sm mb-1">${conv.title || '新对话'}</div>
+                        <div class="text-xs text-gray-400">${new Date(conv.modified).toLocaleString()}</div>
+                        <div class="absolute top-0 bottom-0 left-0 w-1 bg-blue-500 rounded-l-lg opacity-0 group-hover:opacity-100 transition"></div>
+                    </div>
+                `).join('');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // === 🔥 核心优化：加载对话详情 (去重逻辑) ===
+        async function loadConversation(conversationId) {
+            currentConversationId = conversationId;
+            const container = document.getElementById('messagesContainer');
+
+            container.innerHTML = '<div class="h-full flex flex-col items-center justify-center text-gray-400"><i class="fas fa-spinner fa-spin text-3xl mb-4"></i><p>正在恢复记忆...</p></div>';
+
+            loadHistory();
+            if (window.innerWidth < 768) document.getElementById('historySidebar').classList.add('hidden');
+
+            try {
+                const res = await fetch(`${API_BASE}/v1/conversations/${conversationId}/history`);
+                const messages = await res.json();
+
+                container.innerHTML = '';
+                if (messages.length === 0) {
+                    container.innerHTML = '<div class="text-center text-gray-400 py-12">该会话暂无消息</div>';
+                    return;
+                }
+
+                // 🔥 关键修改：用户消息去重
+                let lastUserContent = null;
+
+                messages.forEach(msg => {
+                    // 如果是用户消息，且内容与上一条用户消息相同，则跳过不显示
+                    if (msg.role === 'user') {
+                        if (msg.content === lastUserContent) {
+                            return;
+                        }
+                        lastUserContent = msg.content;
+                    }
+
+                    // 渲染逻辑
+                    let content = msg.content;
+                    if (msg.role === 'assistant' && msg.model) {
+                        content = `**🤖 ${msg.model}**:\n\n${content}`;
+                    }
+                    addMessage(msg.role, content);
+                });
+
+                setTimeout(() => container.scrollTop = container.scrollHeight, 100);
+
+            } catch (e) {
+                addMessage('error', `加载失败: ${e.message}`);
+            }
+        }
+
+        // === UI 辅助函数 ===
+        function addMessage(role, content, isLoading = false) {
+            const container = document.getElementById('messagesContainer');
+            if (container.querySelector('.h-full')) container.querySelector('.h-full').remove();
+
+            const div = document.createElement('div');
+            const isUser = role === 'user';
+
+            div.className = `message-enter flex w-full ${isUser ? 'justify-end' : 'justify-start'}`;
+
+            const avatarHtml = isUser ?
+                `<div class="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0 text-white ml-2"><i class="fas fa-user"></i></div>` :
+                `<div class="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center flex-shrink-0 text-white mr-2"><i class="fas fa-robot"></i></div>`;
+
+            const errorClass = role === 'error' ? 'bg-red-50 border border-red-200 text-red-800' : '';
+            const bgClass = isUser ? 'bg-blue-600 text-white rounded-br-none' : `bg-white border border-gray-200 text-gray-800 rounded-bl-none ${errorClass}`;
+
+            const contentHtml = isLoading ? content : marked.parse(content);
+
+            div.innerHTML = `
+                <div class="flex max-w-[85%] md:max-w-[75%] ${isUser ? 'flex-row-reverse' : 'flex-row'} items-start">
+                    ${avatarHtml}
+                    <div class="${bgClass} px-4 py-3 rounded-2xl shadow-sm text-sm overflow-hidden">
+                        <div class="markdown-body ${isUser ? 'text-white' : ''}">
+                            ${contentHtml}
                         </div>
                     </div>
-                    <div class="text-xs text-gray-400 mt-1 ${role === 'user' ? 'text-right' : ''}">
-                        ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                    </div>
                 </div>
             `;
-
-            container.appendChild(messageDiv);
+            container.appendChild(div);
             container.scrollTop = container.scrollHeight;
-            return messageId;
+            return div;
         }
 
-        // 新对话
         function newChat() {
             currentConversationId = null;
-            document.getElementById('messagesContainer').innerHTML = `
-                <div class="text-center py-12 text-gray-400">
-                    <i class="fas fa-comments text-6xl mb-4"></i>
-                    <p class="text-lg">开始你的 AI 对话之旅</p>
-                    <p class="text-sm mt-2">支持多模型并行调用 (Fan-out)</p>
-                </div>
-            `;
+            document.getElementById('messagesContainer').innerHTML = `<div class="h-full flex flex-col items-center justify-center text-gray-400"><i class="fas fa-comments text-4xl text-gray-300 mb-6"></i><h2 class="text-xl font-semibold mb-2">开始新的对话</h2></div>`;
             document.getElementById('messageInput').focus();
+            loadHistory();
         }
 
-        // 历史功能暂不支持
-        function toggleHistory() {
-            alert("当前后端暂未开放历史列表接口");
+        async function checkHealth() {
+            try {
+                const res = await fetch(`${API_BASE}/health`);
+                const data = await res.json();
+                if (data.status === 'ok') document.getElementById('statusIndicator').innerHTML = `<span class="relative flex h-2 w-2"><span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span><span class="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span></span> System Online`;
+            } catch (e) {
+                document.getElementById('statusIndicator').innerHTML = `<span class="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span> Offline`;
+            }
+        }
+
+        function autoResize(textarea) {
+            textarea.style.height = 'auto';
+            textarea.style.height = Math.min(textarea.scrollHeight, 150) + 'px';
+        }
+
+        function handleKeyPress(e) {
+            if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+        }
+
+        function handleFileSelect(event) {
+            const files = Array.from(event.target.files);
+            const preview = document.getElementById('filePreview');
+            if (files.length > 0) {
+                preview.classList.remove('hidden');
+                preview.innerHTML = files.map(f => `<div class="flex items-center gap-2 bg-blue-50 text-blue-700 px-3 py-1 rounded-full text-xs border border-blue-100"><i class="fas fa-file"></i> ${f.name}</div>`).join('');
+            } else { preview.classList.add('hidden'); }
         }
     </script>
 </body>
