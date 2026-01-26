@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 from shared import models, database
 from shared.models import TaskStatus
 from shared.utils.worker_utils import debug_log, mark_task_failed, claim_task, recover_pending_tasks, \
-    parse_and_validate, process_ai_result
+    parse_and_validate, process_ai_result, get_nacos_target_url
 
 # --- 1. 环境配置与加载 ---
 current_file_path = Path(__file__).resolve()
@@ -79,104 +79,6 @@ def init_stream():
         else:
             raise e
 
-
-def get_target_url(db, conversation_id):
-    """
-    🎯 核心路由逻辑：实现会话粘性 (Sticky Session) - 修正版
-    """
-    if not nacos_client:
-        debug_log("❌ Nacos 客户端未初始化", "ERROR")
-        return None
-
-    try:
-        # 1. 获取实例
-        res = nacos_client.list_naming_instance(SERVICE_NAME, healthy_only=True)
-
-        # 2. 兼容性处理
-        instances = []
-        if isinstance(res, dict):
-            instances = res.get('hosts', [])
-        elif isinstance(res, list):
-            instances = res
-        else:
-            debug_log(f"❌ Nacos 返回数据格式异常: {type(res)}", "ERROR")
-            return None
-
-        if not instances:
-            debug_log(f"⚠️ Nacos 无健康实例", "WARNING")
-            return None
-
-        # ========================================================
-        # 🔥 修改点 1: 使用 "IP:Port" 作为唯一 Key，防止同 IP 覆盖
-        # ========================================================
-        healthy_map = {}
-        for ins in instances:
-            try:
-                if isinstance(ins, dict) and 'ip' in ins and 'port' in ins:
-                    # 组合 Key: "192.168.x.x:8001"
-                    unique_key = f"{ins['ip']}:{ins['port']}"
-                    healthy_map[unique_key] = ins
-            except Exception as e:
-                debug_log(f"⚠️ 跳过异常实例: {e}", "WARNING")
-
-        target_ip = None
-        target_port = 8000
-        chosen_key = None
-
-        # 5. 会话粘性逻辑 (优先复用旧节点)
-        conv = None
-        if conversation_id:
-            conv = db.query(models.Conversation).filter(
-                models.Conversation.conversation_id == conversation_id
-            ).first()
-
-            if conv and conv.session_metadata:
-                # 数据库里存的可能是旧格式(IP)或新格式(IP:Port)，需要兼容
-                last_node_key = conv.session_metadata.get("assigned_node_key")  # 优先用新字段
-
-                # 如果没有新字段，尝试兼容旧逻辑 (但这在单IP多端口下不可靠，略过)
-
-                if last_node_key and last_node_key in healthy_map:
-                    chosen_ins = healthy_map[last_node_key]
-                    target_ip = chosen_ins['ip']
-                    target_port = chosen_ins['port']
-                    chosen_key = last_node_key
-                    debug_log(f"🔗 [会话粘性] 复用节点: {chosen_key}", "INFO")
-
-        # 6. 负载均衡 (随机选择)
-        if not target_ip:
-            if not healthy_map:
-                debug_log("❌ 有效实例映射为空", "ERROR")
-                return None
-
-            # 从所有健康的 "IP:Port" 中随机选一个
-            chosen_key = random.choice(list(healthy_map.keys()))
-            chosen_ins = healthy_map[chosen_key]
-
-            target_ip = chosen_ins['ip']
-            target_port = chosen_ins['port']
-            debug_log(f"🎲 [新分配] 分配节点: {chosen_key}", "INFO")
-
-            # ========================================================
-            # 🔥 修改点 2: 将 "IP:Port" 存入数据库
-            # ========================================================
-            if conv:
-                if not conv.session_metadata:
-                    conv.session_metadata = {}
-                # 存入唯一 Key
-                conv.session_metadata["assigned_node_key"] = chosen_key
-
-                db.add(conv)
-                db.commit()
-
-        return f"http://{target_ip}:{target_port}/v1/chat/completions"
-
-    except Exception as e:
-        debug_log(f"❌ 服务发现处理异常: {e}", "ERROR")
-        import traceback
-        traceback.print_exc()
-        return None
-
 def process_message(message_id, message_data, check_idempotency=True):
     """
     处理单条消息的核心逻辑 (优化版：超时熔断 + 软拒绝检测)
@@ -196,10 +98,7 @@ def process_message(message_id, message_data, check_idempotency=True):
     prompt = task_data.get('prompt')
     model = task_data.get('model')
 
-    existing_task = None
-
     try:
-
         # =========================================================
         # 🔥 幂等性检查
         # =========================================================
@@ -221,7 +120,7 @@ def process_message(message_id, message_data, check_idempotency=True):
             "messages": [{"role": "user", "content": prompt}]
         }
 
-        target_url = get_target_url(db, conversation_id)
+        target_url = get_nacos_target_url(db, conversation_id, nacos_client, SERVICE_NAME)
 
         if not target_url:
             error_msg = "无法获取有效的 Gemini 服务地址 (Nacos Empty)"

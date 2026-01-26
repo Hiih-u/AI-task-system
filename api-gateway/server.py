@@ -2,16 +2,15 @@ import json
 import os
 import uuid
 import redis
-import time
 from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from shared import models, schemas
-from shared.database import SessionLocal, engine, Base
+from shared.database import SessionLocal
 from shared.models import TaskStatus
 from shared.utils.logger import debug_log
 
