@@ -6,7 +6,7 @@ WORKDIR /app
 
 # --- 1. 安装依赖 ---
 # 复制根目录下的 requirements.txt
-COPY requirements.txt .
+COPY requirements_linux.txt .
 
 # 安装依赖
 # --no-cache-dir 减小镜像体积

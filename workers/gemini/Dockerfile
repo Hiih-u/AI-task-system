@@ -7,7 +7,7 @@ WORKDIR /app
 # --- 1. 安装依赖 ---
 # 复制根目录下的 requirements.txt
 # 注意：构建时上下文(Context)必须是项目根目录，否则无法复制上级文件
-COPY requirements.txt .
+COPY requirements_linux.txt .
 
 # 安装依赖
 # --no-cache-dir 减小镜像体积
