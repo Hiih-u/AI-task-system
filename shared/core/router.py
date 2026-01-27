@@ -48,6 +48,8 @@ def get_nacos_target_url(db, conversation_id, nacos_client, service_name):
         target_port = 8000
         chosen_key = None
 
+        last_node_key = None
+
         # 4. 会话粘性逻辑 (优先复用旧节点)
         conv = None
         if conversation_id:
@@ -90,7 +92,8 @@ def get_nacos_target_url(db, conversation_id, nacos_client, service_name):
                 db.add(conv)
                 db.commit()
 
-        return f"http://{target_ip}:{target_port}/v1/chat/completions"
+        is_node_changed = (last_node_key != chosen_key)
+        return f"http://{target_ip}:{target_port}/v1/chat/completions", is_node_changed
 
     except Exception as e:
         debug_log(f"❌ 服务发现处理异常: {e}", "ERROR")

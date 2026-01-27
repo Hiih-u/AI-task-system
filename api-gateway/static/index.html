@@ -169,13 +169,19 @@
 
     <script>
         const API_BASE = window.location.origin;
-        let currentConversationId = null;
+        let currentConversationId = localStorage.getItem('last_conversation_id');
 
         const TASK_STATUS = { PENDING: 0, SUCCESS: 1, FAILED: 2, PROCESSING: 3 };
 
         document.addEventListener('DOMContentLoaded', () => {
             checkHealth();
-            loadHistory();
+            // 如果有旧 ID，自动加载历史记录
+            if (currentConversationId) {
+                console.log("🌸 发现旧会话，正在恢复...", currentConversationId);
+                loadConversation(currentConversationId);
+            } else {
+                loadHistory(); // 否则加载列表
+            }
         });
 
         function toggleHistory() {
@@ -215,6 +221,8 @@
                 const data = await response.json();
                 const batchId = data.batch_id;
                 currentConversationId = data.conversation_id;
+
+                localStorage.setItem('last_conversation_id', currentConversationId);
 
                 // 轮询结果 (支持增量显示)
                 pollBatchResult(batchId, loadingId);
@@ -340,6 +348,7 @@
         async function loadConversation(conversationId) {
             // 1. 更新全局状态
             currentConversationId = conversationId;
+            localStorage.setItem('last_conversation_id', conversationId);
             const container = document.getElementById('messagesContainer');
 
             // 2. 显示加载动画 (清空当前屏幕)
@@ -461,6 +470,9 @@
 
         function newChat() {
             currentConversationId = null;
+
+            localStorage.removeItem('last_conversation_id');
+
             document.getElementById('messagesContainer').innerHTML = `<div class="h-full flex flex-col items-center justify-center text-gray-400"><i class="fas fa-comments text-4xl text-gray-300 mb-6"></i><h2 class="text-xl font-semibold mb-2">开始新的对话</h2></div>`;
             document.getElementById('messageInput').focus();
             loadHistory();

@@ -14,6 +14,7 @@ import requests
 from dotenv import load_dotenv
 
 from shared import database
+from shared.core.context_loader import build_conversation_context
 from shared.utils.logger import debug_log
 from shared.core import (
     parse_and_validate,     # 消息层
@@ -119,23 +120,36 @@ def process_message(message_id, message_data, check_idempotency=True):
         debug_log(f"开始处理: {task_id}", "REQUEST")
 
         # --- 2. 调用下游 AI 服务 ---
-        payload = {
-            "model": model,
-            "conversation_id": conversation_id,
-            "messages": [{"role": "user", "content": prompt}]
-        }
+        route_result = get_nacos_target_url(db, conversation_id, nacos_client, SERVICE_NAME)
 
-        target_url = get_nacos_target_url(db, conversation_id, nacos_client, SERVICE_NAME)
-
-        if not target_url:
+        if not route_result:
             error_msg = "无法获取有效的 Gemini 服务地址 (Nacos Empty)"
             mark_task_failed(db, task_id, error_msg)
             redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
             return
 
+        # 解包 tuple
+        target_url, is_node_changed = route_result
         debug_log(f"发送请求到: {target_url}", "REQUEST")
 
         headers = {"Content-Type": "application/json"}
+
+        messages_payload = []
+        if is_node_changed:
+            # A. 发生节点漂移（或首字对话）-> 必须构建全量历史
+            debug_log(f"🔄 检测到节点变更，正在同步上下文历史...", "INFO")
+            messages_payload = build_conversation_context(db, conversation_id, prompt)
+            print(f"上下文历史: {messages_payload}")
+        else:
+            # B. 节点没变
+            messages_payload = [{"role": "user", "content": prompt}]
+
+            # 3. 组装最终请求数据
+        payload = {
+            "model": model,
+            "conversation_id": conversation_id,
+            "messages": messages_payload
+        }
 
         start_time = time.time()
         response = requests.post(target_url, json=payload, headers=headers, timeout=120)
