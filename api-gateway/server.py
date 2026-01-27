@@ -7,7 +7,7 @@ import redis
 from datetime import datetime
 from typing import Optional, List
 
-from fastapi import FastAPI, Depends, HTTPException, Form, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, Form, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from starlette.responses import FileResponse
@@ -104,6 +104,8 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 current_dir = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(current_dir, "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+app.mount("/files", StaticFiles(directory=UPLOAD_DIR), name="files")
 
 @app.get("/")
 async def read_root():
@@ -273,7 +275,7 @@ def get_batch_result(batch_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/v1/conversations/{conversation_id}/history")
-def get_history(conversation_id: str, db: Session = Depends(get_db)):
+def get_history(conversation_id: str, request: Request, db: Session = Depends(get_db)):
     # 1. 获取该会话下所有成功的任务，按时间排序
     tasks = db.query(models.Task).filter(
         models.Task.conversation_id == conversation_id,
@@ -282,12 +284,26 @@ def get_history(conversation_id: str, db: Session = Depends(get_db)):
 
     # 2. 构建消息列表
     messages = []
+    base_url = str(request.base_url).rstrip("/")
+
     for t in tasks:
-        # A. 先放用户的提问
+        # --- 处理文件路径 ---
+        file_urls = []
+        if t.file_paths:
+            # 兼容处理：如果是字符串先转列表
+            paths = t.file_paths if isinstance(t.file_paths, list) else json.loads(t.file_paths)
+            for p in paths:
+                # 提取文件名 (例如 /app/uploads/abc.jpg -> abc.jpg)
+                filename = os.path.basename(p)
+                # 生成完整访问链接
+                file_urls.append(f"{base_url}/files/{filename}")
+
+        # A. 用户提问
         messages.append({
             "role": "user",
             "content": t.prompt,
-            "model": t.model_name
+            "model": t.model_name,
+            "files": file_urls  # ✨ 把文件 URL 传给前端
         })
 
         # 🔥 修改：如果还在跑，给个特殊标记
