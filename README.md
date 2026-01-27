@@ -1,4 +1,4 @@
-# 🚀 AI Task System (Enterprise Async Architecture)
+# 🚀 Async-Chat
 
 > **基于 FastAPI + Redis Streams + PostgreSQL 构建的高并发、多模型 AI 任务编排系统**
 
