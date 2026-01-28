@@ -90,3 +90,29 @@ class Task(Base):
 
     # 关系
     batch = relationship("ChatBatch", back_populates="tasks")
+
+
+class GeminiServiceNode(Base):
+    """
+    Gemini 服务节点/账号表
+    替代 Nacos 做服务发现
+    """
+    __tablename__ = "gemini_service_nodes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    # 节点的唯一标识，例如 "worker-1" 或 "http://192.168.1.5:8001"
+    node_url = Column(String, unique=True, index=True, nullable=False)
+    worker_id = Column(String, nullable=True)
+
+    # 状态: HEALTHY, BUSY, 429_LIMIT, OFFLINE
+    status = Column(String, default="HEALTHY", index=True)
+
+    # 负载权重
+    weight = Column(Float, default=1.0)
+
+    # 错误计数（用于熔断）
+    error_count = Column(Integer, default=0)
+
+    # 最后心跳时间
+    last_heartbeat = Column(DateTime, default=datetime.now)
+    created_at = Column(DateTime, default=datetime.now)

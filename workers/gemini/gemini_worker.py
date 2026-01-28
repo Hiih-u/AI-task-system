@@ -19,7 +19,7 @@ from core import (
     claim_task,             # 状态层
     mark_task_failed,       # 状态层
     recover_pending_tasks,  # 消息层
-    get_nacos_target_url,   # 路由层
+    get_database_target_url,   # 路由层
     process_ai_result       # 业务层
 )
 
@@ -38,10 +38,6 @@ else:
 REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
-NACOS_SERVER_ADDR = os.getenv("NACOS_SERVER_ADDR", "127.0.0.1:8848")
-NACOS_NAMESPACE = "public"
-SERVICE_NAME = "gemini-service"
-
 DEBUG = True
 STREAM_KEY = os.getenv("STREAM_KEY", "gemini_stream")
 GROUP_NAME = os.getenv("GROUP_NAME", "gemini_workers_group")
@@ -52,13 +48,6 @@ if not worker_identity:
     worker_identity = f"{socket.gethostname()}-{os.getpid()}"
     print(f"⚠️ 警告: 未配置 WORKER_ID，使用随机ID: {worker_identity}")
 CONSUMER_NAME = f"worker-{worker_identity}"
-
-try:
-    nacos_client = nacos.NacosClient(NACOS_SERVER_ADDR, namespace=NACOS_NAMESPACE)
-    debug_log(f"✅ Nacos 客户端已连接: {NACOS_SERVER_ADDR}", "INFO")
-except Exception as e:
-    debug_log(f"❌ Nacos 连接失败: {e}", "ERROR")
-    nacos_client = None
 
 # 初始化 Redis 连接
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
@@ -119,10 +108,10 @@ def process_message(message_id, message_data, check_idempotency=True):
         debug_log(f"开始处理: {task_id}", "REQUEST")
 
         # --- 2. 调用下游 AI 服务 ---
-        route_result = get_nacos_target_url(db, conversation_id, nacos_client, SERVICE_NAME)
+        route_result = get_database_target_url(db, conversation_id)
 
         if not route_result:
-            error_msg = "无法获取有效的 Gemini 服务地址 (Nacos Empty)"
+            error_msg = "暂无可用 Gemini 节点 (数据库无活跃记录)"
             mark_task_failed(db, task_id, error_msg)
             redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
             return

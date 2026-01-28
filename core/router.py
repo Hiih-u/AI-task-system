@@ -1,56 +1,135 @@
 import random
+from datetime import datetime, timedelta
+
 from shared import models
 from shared.logger import debug_log
 
-def get_nacos_target_url(db, conversation_id, nacos_client, service_name):
-    """
-    🎯 通用 Nacos 路由逻辑：实现会话粘性 (Sticky Session)
+# def get_nacos_target_url(db, conversation_id, nacos_client, service_name):
+#     """
+#     🎯 通用 Nacos 路由逻辑：实现会话粘性 (Sticky Session)
+#
+#     :param db: 数据库 Session
+#     :param conversation_id: 会话 ID
+#     :param nacos_client: Nacos 客户端实例
+#     :param service_name: 服务名称 (如 "gemini-service")
+#     :return: 目标 URL (例如 "http://192.168.1.5:8001/v1/chat/completions") 或 None
+#     """
+#     if not nacos_client:
+#         debug_log("❌ Nacos 客户端未初始化", "ERROR")
+#         return None
+#
+#     try:
+#         # 1. 获取实例
+#         res = nacos_client.list_naming_instance(service_name, healthy_only=True)
+#
+#         # 2. 数据格式兼容处理
+#         instances = []
+#         if isinstance(res, dict):
+#             instances = res.get('hosts', [])
+#         elif isinstance(res, list):
+#             instances = res
+#         else:
+#             debug_log(f"❌ Nacos 返回数据格式异常: {type(res)}", "ERROR")
+#             return None
+#
+#         if not instances:
+#             debug_log(f"⚠️ Nacos 无健康实例: {service_name}", "WARNING")
+#             return None
+#
+#         # 3. 构建 "IP:Port" 映射表 (防止同IP多端口覆盖)
+#         healthy_map = {}
+#         for ins in instances:
+#             try:
+#                 if isinstance(ins, dict) and 'ip' in ins and 'port' in ins:
+#                     unique_key = f"{ins['ip']}:{ins['port']}"
+#                     healthy_map[unique_key] = ins
+#             except Exception as e:
+#                 debug_log(f"⚠️ 跳过异常实例: {e}", "WARNING")
+#
+#         target_ip = None
+#         target_port = 8000
+#         chosen_key = None
+#
+#         last_node_key = None
+#
+#         # 4. 会话粘性逻辑 (优先复用旧节点)
+#         conv = None
+#         if conversation_id:
+#             conv = db.query(models.Conversation).filter(
+#                 models.Conversation.conversation_id == conversation_id
+#             ).first()
+#
+#             if conv and conv.session_metadata:
+#                 last_node_key = conv.session_metadata.get("assigned_node_key")
+#
+#                 # 如果上次分配的节点现在还活着，就继续用它
+#                 if last_node_key and last_node_key in healthy_map:
+#                     chosen_ins = healthy_map[last_node_key]
+#                     target_ip = chosen_ins['ip']
+#                     target_port = chosen_ins['port']
+#                     chosen_key = last_node_key
+#                     debug_log(f"🔗 [会话粘性] 复用节点: {chosen_key}", "INFO")
+#
+#         # 5. 负载均衡 (随机选择)
+#         if not target_ip:
+#             if not healthy_map:
+#                 debug_log("❌ 有效实例映射为空", "ERROR")
+#                 return None
+#
+#             chosen_key = random.choice(list(healthy_map.keys()))
+#             chosen_ins = healthy_map[chosen_key]
+#
+#             target_ip = chosen_ins['ip']
+#             target_port = chosen_ins['port']
+#             debug_log(f"🎲 [新分配] 分配节点: {chosen_key}", "INFO")
+#
+#             # 6. 将分配结果写入数据库 (实现粘性)
+#             if conv:
+#                 if not conv.session_metadata:
+#                     conv.session_metadata = {}
+#                 conv.session_metadata["assigned_node_key"] = chosen_key
+#                 # 注意：这里只 add 不 commit，由调用方(Worker)在最后统一 commit，
+#                 # 或者如果你希望立即生效，也可以在这里 db.commit()。
+#                 # 建议：为了事务安全性，可以让 Worker 统一提交，或者在这里单独提交。
+#                 db.add(conv)
+#                 db.commit()
+#
+#         is_node_changed = (last_node_key != chosen_key)
+#         return f"http://{target_ip}:{target_port}/v1/chat/completions", is_node_changed
+#
+#     except Exception as e:
+#         debug_log(f"❌ 服务发现处理异常: {e}", "ERROR")
+#         return None
 
-    :param db: 数据库 Session
-    :param conversation_id: 会话 ID
-    :param nacos_client: Nacos 客户端实例
-    :param service_name: 服务名称 (如 "gemini-service")
-    :return: 目标 URL (例如 "http://192.168.1.5:8001/v1/chat/completions") 或 None
+def get_database_target_url(db, conversation_id, service_name_ignored=None):
     """
-    if not nacos_client:
-        debug_log("❌ Nacos 客户端未初始化", "ERROR")
-        return None
-
+    🎯 基于数据库的服务发现逻辑
+    1. 查找所有 status='HEALTHY' 且 last_heartbeat 在 30s 内的节点
+    2. 实现会话粘性 (Sticky Session)
+    """
     try:
-        # 1. 获取实例
-        res = nacos_client.list_naming_instance(service_name, healthy_only=True)
+        # 1. 定义存活判定时间 (30秒没心跳视为掉线)
+        alive_threshold = datetime.now() - timedelta(seconds=30)
 
-        # 2. 数据格式兼容处理
-        instances = []
-        if isinstance(res, dict):
-            instances = res.get('hosts', [])
-        elif isinstance(res, list):
-            instances = res
-        else:
-            debug_log(f"❌ Nacos 返回数据格式异常: {type(res)}", "ERROR")
-            return None
+        # 2. 查询所有活跃节点
+        # 注意：这里我们过滤掉了状态为 '429_LIMIT' 或 'OFFLINE' 的节点
+        active_nodes = db.query(models.GeminiServiceNode).filter(
+            models.GeminiServiceNode.last_heartbeat > alive_threshold,
+            models.GeminiServiceNode.status == "HEALTHY"
+        ).all()
 
-        if not instances:
-            debug_log(f"⚠️ Nacos 无健康实例: {service_name}", "WARNING")
-            return None
+        if not active_nodes:
+            debug_log("❌ 数据库中没有可用的健康节点 (无心跳或全被熔断)", "ERROR")
+            return None, False
 
-        # 3. 构建 "IP:Port" 映射表 (防止同IP多端口覆盖)
-        healthy_map = {}
-        for ins in instances:
-            try:
-                if isinstance(ins, dict) and 'ip' in ins and 'port' in ins:
-                    unique_key = f"{ins['ip']}:{ins['port']}"
-                    healthy_map[unique_key] = ins
-            except Exception as e:
-                debug_log(f"⚠️ 跳过异常实例: {e}", "WARNING")
+        # 构建 URL 映射表 {url: node_obj}
+        healthy_map = {node.node_url: node for node in active_nodes}
 
-        target_ip = None
-        target_port = 8000
-        chosen_key = None
+        target_url = None
+        chosen_node = None
+        last_node_url = None
 
-        last_node_key = None
-
-        # 4. 会话粘性逻辑 (优先复用旧节点)
+        # 3. 会话粘性逻辑 (优先复用旧节点)
         conv = None
         if conversation_id:
             conv = db.query(models.Conversation).filter(
@@ -58,43 +137,34 @@ def get_nacos_target_url(db, conversation_id, nacos_client, service_name):
             ).first()
 
             if conv and conv.session_metadata:
-                last_node_key = conv.session_metadata.get("assigned_node_key")
+                last_node_url = conv.session_metadata.get("assigned_node_url")
 
                 # 如果上次分配的节点现在还活着，就继续用它
-                if last_node_key and last_node_key in healthy_map:
-                    chosen_ins = healthy_map[last_node_key]
-                    target_ip = chosen_ins['ip']
-                    target_port = chosen_ins['port']
-                    chosen_key = last_node_key
-                    debug_log(f"🔗 [会话粘性] 复用节点: {chosen_key}", "INFO")
+                if last_node_url and last_node_url in healthy_map:
+                    target_url = last_node_url
+                    chosen_node = healthy_map[last_node_url]
+                    debug_log(f"🔗 [会话粘性] 复用节点: {target_url}", "INFO")
 
-        # 5. 负载均衡 (随机选择)
-        if not target_ip:
-            if not healthy_map:
-                debug_log("❌ 有效实例映射为空", "ERROR")
-                return None
+        # 4. 负载均衡 (随机选择)
+        if not target_url:
+            chosen_node = random.choice(active_nodes)
+            target_url = chosen_node.node_url
+            debug_log(f"🎲 [新分配] 分配节点: {target_url}", "INFO")
 
-            chosen_key = random.choice(list(healthy_map.keys()))
-            chosen_ins = healthy_map[chosen_key]
-
-            target_ip = chosen_ins['ip']
-            target_port = chosen_ins['port']
-            debug_log(f"🎲 [新分配] 分配节点: {chosen_key}", "INFO")
-
-            # 6. 将分配结果写入数据库 (实现粘性)
+            # 记录分配结果
             if conv:
                 if not conv.session_metadata:
                     conv.session_metadata = {}
-                conv.session_metadata["assigned_node_key"] = chosen_key
-                # 注意：这里只 add 不 commit，由调用方(Worker)在最后统一 commit，
-                # 或者如果你希望立即生效，也可以在这里 db.commit()。
-                # 建议：为了事务安全性，可以让 Worker 统一提交，或者在这里单独提交。
+                conv.session_metadata["assigned_node_url"] = target_url
                 db.add(conv)
-                db.commit()
+                # 这里不 commit，由外层统一 commit
 
-        is_node_changed = (last_node_key != chosen_key)
-        return f"http://{target_ip}:{target_port}/v1/chat/completions", is_node_changed
+        is_node_changed = (last_node_url != target_url)
+
+        # 补全 API 路径 (假设存的是 http://ip:port)
+        final_url = f"{target_url}/v1/chat/completions"
+        return final_url, is_node_changed
 
     except Exception as e:
-        debug_log(f"❌ 服务发现处理异常: {e}", "ERROR")
-        return None
+        debug_log(f"❌ 数据库路由异常: {e}", "ERROR")
+        return None, False
