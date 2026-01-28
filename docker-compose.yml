@@ -72,6 +72,22 @@ services:
     depends_on:
       - redis
 
+  postgres:
+    image: postgres:18
+    container_name: postgresql
+    ports:
+      - "5432:5432"
+    environment:
+      - TZ=Asia/Shanghai
+      - POSTGRES_PASSWORD=Hi8899
+      - PGDATA=/var/lib/postgresql/18/docker
+      - LANG=C.UTF-8
+      - POSTGRES_INITDB_ARGS=-c wal_buffers=16MB
+    volumes:
+      - pg_data:/var/lib/postgresql/18/docker
+    networks:
+      - gemini-net
+    restart: unless-stopped
 volumes:
   uploads_cache:
-  data:
+  pg_data:

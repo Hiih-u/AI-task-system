@@ -99,9 +99,8 @@ class GeminiServiceNode(Base):
     """
     __tablename__ = "gemini_service_nodes"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
     # 节点的唯一标识，例如 "worker-1" 或 "http://192.168.1.5:8001"
-    node_url = Column(String, unique=True, index=True, nullable=False)
+    node_url = Column(String, primary_key=True, index=True)
     worker_id = Column(String, nullable=True)
 
     # 状态: HEALTHY, BUSY, 429_LIMIT, OFFLINE
