@@ -105,6 +105,7 @@ class GeminiServiceNode(Base):
 
     # 状态: HEALTHY, BUSY, 429_LIMIT, OFFLINE
     status = Column(String, default="HEALTHY", index=True)
+    current_tasks = Column(Integer, default=0)
 
     # 负载权重
     weight = Column(Float, default=1.0)
