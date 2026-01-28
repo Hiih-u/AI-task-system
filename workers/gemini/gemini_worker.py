@@ -135,7 +135,6 @@ def process_message(message_id, message_data, check_idempotency=True):
             # A. 发生节点漂移（或首字对话）-> 必须构建全量历史
             debug_log(f"🔄 检测到节点变更，正在同步上下文历史...", "INFO")
             messages_payload = build_conversation_context(db, conversation_id, prompt)
-            print(f"上下文历史: {messages_payload}")
         else:
             # B. 节点没变
             messages_payload = [{"role": "user", "content": prompt}]
