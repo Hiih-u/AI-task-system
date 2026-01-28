@@ -4,7 +4,6 @@ import time
 import socket
 from pathlib import Path
 
-import nacos
 from requests.exceptions import RequestException, Timeout, ConnectTimeout
 import redis
 import requests

@@ -13,7 +13,6 @@ httpcore
 httpx
 idna
 loguru
-nacos-sdk-python==0.1.12
 numpy
 orjson
 psycopg2-binary

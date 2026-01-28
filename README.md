@@ -20,7 +20,6 @@
 
 专门为 Google Gemini 业务场景深度定制的 Worker (`workers/gemini/gemini_worker.py`)：
 
-* **🔗 Nacos 服务发现 & 负载均衡**：集成 Nacos 客户端，自动发现下游 Gemini 服务节点，支持动态扩缩容。
 * **🍬 会话粘性 (Session Stickiness)**：优先将同一会话路由到同一后端节点，最大限度利用缓存。如果节点变更，自动从数据库重组完整上下文 (`Context Reconstruction`)。
 * **🛡️ 软拒绝检测 (Soft Refusal Check)**：内置内容审查机制，自动拦截如 "I cannot create images" 等拒答回复，并标记任务状态，防止无效内容污染上下文。
 
