@@ -1,6 +1,6 @@
 import random
 from shared import models
-from shared.utils.logger import debug_log
+from shared.logger import debug_log
 
 def get_nacos_target_url(db, conversation_id, nacos_client, service_name):
     """

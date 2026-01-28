@@ -16,7 +16,7 @@ from starlette.staticfiles import StaticFiles
 from shared import models, schemas
 from shared.database import SessionLocal
 from shared.models import TaskStatus
-from shared.utils.logger import debug_log
+from shared.logger import debug_log
 
 
 app = FastAPI(title="AI Task Gateway", version="2.0.0")

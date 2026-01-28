@@ -1,11 +1,8 @@
 # workers/gemini/gemini_worker.py
-import json
 import os
 import time
 import socket
 from pathlib import Path
-from datetime import datetime
-import random
 
 import nacos
 from requests.exceptions import RequestException, Timeout, ConnectTimeout
@@ -14,10 +11,10 @@ import requests
 from dotenv import load_dotenv
 
 from shared import database
-from shared.core.context_loader import build_conversation_context
-from shared.core.upload_file import upload_files_to_downstream
-from shared.utils.logger import debug_log
-from shared.core import (
+from core import build_conversation_context
+from core import upload_files_to_downstream
+from shared.logger import debug_log
+from core import (
     parse_and_validate,     # 消息层
     claim_task,             # 状态层
     mark_task_failed,       # 状态层

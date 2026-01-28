@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -r requirements_linux.txt
 # --- 2. 复制源代码 ---
 # 关键：必须复制 shared 文件夹，因为 worker 依赖它 (from shared import ...)
 COPY shared/ ./shared/
+COPY core/ ./core/
 
 # 复制 Gemini Worker 的特定代码
 COPY workers/gemini/ ./workers/gemini/

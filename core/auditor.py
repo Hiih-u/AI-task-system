@@ -1,5 +1,5 @@
-from shared.utils.logger import debug_log
-from shared.core.task_state import finish_task_success, mark_task_failed
+from shared.logger import debug_log
+from core.task_state import finish_task_success, mark_task_failed
 
 def process_ai_result(db, task_id, ai_text, cost_time, conversation_id=None, refusal_keywords=None):
     """

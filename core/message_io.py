@@ -3,7 +3,7 @@ import time
 
 import redis
 
-from shared.utils.logger import debug_log
+from shared.logger import debug_log
 from shared.database import SessionLocal
 from shared import models
 from shared.models import TaskStatus

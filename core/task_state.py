@@ -4,7 +4,7 @@ from requests import Session
 
 from shared import models
 from shared.models import TaskStatus
-from shared.utils.logger import debug_log, log_error
+from shared.logger import debug_log, log_error
 
 def claim_task(db: Session, task_id: str) -> bool:
     """
