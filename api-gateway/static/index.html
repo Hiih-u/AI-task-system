@@ -36,7 +36,7 @@
 
         /* 代码块样式优化 */
         .markdown-body pre {
-            background: #1e293b !important; /* 深蓝灰色背景 */
+            background: #f0f4f8 !important; /* 深蓝灰色背景 */
             color: #e2e8f0;
             padding: 1rem;
             border-radius: 0.75rem;
@@ -47,12 +47,13 @@
 
         /* 行内代码 */
         .markdown-body code {
-            background: rgba(100, 116, 139, 0.1);
-            color: #ea580c; /* 🔥 暖橙色 (护眼，类似 Notion) */
-            padding: 0.1rem 0.3rem;
-            border-radius: 0.25rem;
+            background-color: #f0f4f8; /* 淡蓝灰色背景，更接近你图片的效果 */
+            color: #475569;            /* 深蓝灰色文字，比纯黑更护眼 */
+            padding: 0.2rem 0.4rem;
+            border-radius: 0.375rem;
             font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
             font-size: 0.85em;
+            border: 1px solid #e2e8f0; /* 可选：增加一个极细的边框，质感更好 */
         }
 
         /* 用户气泡里的行内代码（反白显示） */
