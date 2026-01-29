@@ -91,6 +91,32 @@ services:
       depends_on:
         - redis
 
+  deepseek-worker:
+      container_name: deepseek-worker
+      build:
+        context: .
+        dockerfile: services/workers/deepseek/Dockerfile
+      restart: always
+      volumes:
+        - uploads_cache:/app/services/gateway/uploads
+      environment:
+        - REDIS_HOST=redis
+        - REDIS_PORT=6379
+        - DB_HOST=postgres
+        - DB_PORT=5432
+        - POSTGRES_PASSWORD=Hi8899
+
+        # 队列配置
+        - STREAM_KEY=deepseek_stream
+        - GROUP_NAME=deepseek_workers_group
+        - DEEPSEEK_WORKER_ID=deepseek-worker-1
+
+        # 👇 配置下游 LLM 地址 (Ollama 或 DeepSeek 官方)
+        - LLM_SERVICE_URL=http://192.168.202.155:61414/v1/chat/completions
+        - DEEPSEEK_API_KEY= # 如果有 Key 的话
+      depends_on:
+        - redis
+
   postgres:
     image: postgres:18
     container_name: postgresql

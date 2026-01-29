@@ -32,8 +32,8 @@ DEEPSEEK_SERVICE_URL = os.getenv("DEEPSEEK_SERVICE_URL", "http://192.168.202.155
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")  # 如果是本地 Ollama，这个可以为空
 
 # 队列配置 (必须与 server.py 中的 dispatch_task 逻辑一致)
-STREAM_KEY = "deepseek_stream"
-GROUP_NAME = "deepseek_workers_group"
+STREAM_KEY = os.getenv("STREAM_KEY", "deepseek_stream")
+GROUP_NAME = os.getenv("GROUP_NAME", "deepseek_workers_group")
 
 worker_identity = os.getenv("DEEPSEEK_WORKER_ID")
 if not worker_identity:
