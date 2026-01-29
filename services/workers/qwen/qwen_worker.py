@@ -29,7 +29,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "127.0.0.1")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
 # 后端服务地址 (这里假设你已经换成了支持 context 的服务，或者你改回了 Gemini 服务)
-LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://192.168.202.155:61413/v1/chat/completions")
+LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://192.168.202.155:11434/v1/chat/completions")
 
 # 队列配置
 STREAM_KEY = os.getenv("STREAM_KEY", "qwen_stream")
