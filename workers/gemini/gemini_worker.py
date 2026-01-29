@@ -117,6 +117,14 @@ def process_message(message_id, message_data, check_idempotency=True):
 
         # 解包 tuple
         target_url, is_node_changed = route_result
+
+        if not target_url:
+            error_msg = "暂无可用 Gemini 节点 (数据库无活跃记录)"
+            debug_log(f"❌ {error_msg}", "ERROR")  # 建议加一条日志
+            mark_task_failed(db, task_id, error_msg)
+            redis_client.xack(STREAM_KEY, GROUP_NAME, message_id)
+            return
+
         target_base_url = target_url.replace("/v1/chat/completions", "")
         debug_log(f"发送请求到: {target_url}", "REQUEST")
 
