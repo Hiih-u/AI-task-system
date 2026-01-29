@@ -281,13 +281,15 @@
             const message = input.value.trim();
 
             // ⚡ 修改：获取选中的模型列表
-            const checkboxes = document.querySelectorAll('#modelMenu input[type="checkbox"]:checked');
-            if (checkboxes.length === 0) {
+            const allCheckboxes = document.querySelectorAll('#modelMenu input[type="checkbox"]:checked');
+            const modelCheckboxes = Array.from(allCheckboxes).filter(cb => cb.id !== 'geminiDualMode');
+
+            if (modelCheckboxes.length === 0) {
                 alert("请至少选择一个模型！");
                 return;
             }
             // 拼接成逗号分隔字符串: "gemini-2.5-flash, qwen3:8b"
-            const modelConfig = Array.from(checkboxes).map(cb => cb.value).join(', ');
+            const modelConfig = modelCheckboxes.map(cb => cb.value).join(', ');
 
             const fileInput = document.getElementById('fileInput');
             const modeSelect = document.getElementById('modeSelect');

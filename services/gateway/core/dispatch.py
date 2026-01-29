@@ -22,7 +22,7 @@ def dispatch_to_stream(redis_client, task_payload: dict, optional_stream_key: st
     else:
         # 2. 否则走自动路由逻辑
         model_name = task_payload.get("model", "").lower()
-        stream_key = "gemini_stream"  # 默认兜底
+        stream_key = "qwen_stream"  # 默认兜底
 
         if "qwen" in model_name or "千问" in model_name:
             stream_key = "qwen_stream"
@@ -148,7 +148,8 @@ def dispatch_tasks(
         file_paths: List[str],
         gemini_concurrency: int = 1  # 👈 接收前端并发参数
 ) -> List[str]:
-    model_list = [m.strip() for m in model_config.split(",") if m.strip()]
+    raw_list = [m.strip() for m in model_config.split(",") if m.strip()]
+    model_list = [m for m in raw_list if m.lower() != "on"]
     if not model_list:
         model_list = ["gemini-2.5-flash"]
 
