@@ -17,7 +17,7 @@ RUN pip install --no-cache-dir -r requirements_linux.txt
 COPY common/ ./common/
 
 # 复制 gateway 代码
-COPY services/gateway/ .services/gateway/
+COPY services/gateway/ ./services/gateway/
 
 # 设置 PYTHONPATH，确保 python 能找到 common 模块
 ENV PYTHONPATH=/app

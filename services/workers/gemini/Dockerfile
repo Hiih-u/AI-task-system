@@ -15,10 +15,10 @@ RUN pip install --no-cache-dir -r requirements_linux.txt
 # --- 2. 复制源代码 ---
 # 关键：必须复制 common 文件夹，因为 worker 依赖它 (from common import ...)
 COPY common/ ./common/
-COPY services/workers/core/ .services/workers/core/
+COPY services/workers/core/ ./services/workers/core/
 
 # 复制 Gemini Worker 的特定代码
-COPY services/workers/gemini/ .services/workers/gemini/
+COPY services/workers/gemini/ ./services/workers/gemini/
 
 # 设置 PYTHONPATH，确保 python 能找到 common 模块
 ENV PYTHONPATH=/app
