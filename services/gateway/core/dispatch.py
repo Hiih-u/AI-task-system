@@ -1,8 +1,6 @@
 # --- 核心逻辑：路由分发 ---
 import json
 
-
-
 def dispatch_to_stream(redis_client, task_payload: dict) -> str:
     """根据模型名称决定投递到哪个 Redis Stream"""
     model_name = task_payload.get("model", "").lower()
