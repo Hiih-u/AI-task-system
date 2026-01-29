@@ -48,8 +48,8 @@ services:
       - DB_HOST=postgres
       - DB_PORT=5432
       - POSTGRES_PASSWORD=Hi8899
-      - STREAM_KEY=gemini_stream
-      - GROUP_NAME=gemini_workers_group
+      - STREAM_KEY=gemini_stream_1
+      - GROUP_NAME=gemini_workers_group_1
       - GEMINI_WORKER_ID=gemini-worker-1
     depends_on:
       - redis
@@ -69,11 +69,33 @@ services:
       - DB_HOST=postgres
       - DB_PORT=5432
       - POSTGRES_PASSWORD=Hi8899
-      - STREAM_KEY=gemini_stream
-      - GROUP_NAME=gemini_workers_group
+      - STREAM_KEY=gemini_stream_1
+      - GROUP_NAME=gemini_workers_group_1
       - GEMINI_WORKER_ID=gemini-worker-2
     depends_on:
       - redis
+
+  gemini-worker-3:
+      container_name: gemini-worker-3
+      build:
+        context: .
+        dockerfile: services/workers/gemini/Dockerfile
+      restart: always
+      volumes:
+        - uploads_cache:/app/services/gateway/uploads
+      environment:
+        - TZ=Asia/Shanghai
+        - REDIS_HOST=redis
+        - REDIS_PORT=6379
+        - DB_HOST=postgres
+        - DB_PORT=5432
+        - POSTGRES_PASSWORD=Hi8899
+        # 👇 关键修改：监听 gemini_stream_2
+        - STREAM_KEY=gemini_stream_2
+        - GROUP_NAME=gemini_group_2
+        - GEMINI_WORKER_ID=gemini-worker-3
+      depends_on:
+        - redis
 
   qwen-worker:
       container_name: qwen-worker

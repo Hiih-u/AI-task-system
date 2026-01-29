@@ -1,4 +1,5 @@
-# --- 核心逻辑：路由分发 ---
+# services/gateway/core/dispatch.py
+
 import json
 import uuid
 import random
@@ -6,26 +7,33 @@ from typing import List, Optional, Type
 
 from sqlalchemy.orm import Session
 from common import models
-from common.models import TaskStatus, GeminiServiceNode  # 👈 导入节点模型
+from common.models import TaskStatus, GeminiServiceNode
 from common.logger import debug_log
 
 
-def dispatch_to_stream(redis_client, task_payload: dict) -> str:
-    """根据模型名称决定投递到哪个 Redis Stream"""
-    model_name = task_payload.get("model", "").lower()
+def dispatch_to_stream(redis_client, task_payload: dict, optional_stream_key: str = None) -> str:
+    """
+    根据模型名称或强制指定参数，决定投递到哪个 Redis Stream
+    :param optional_stream_key: 强制指定 Stream Key (用于分片消费)
+    """
+    # 1. 如果强制指定了 Key (例如 gemini_stream_1)，优先级最高
+    if optional_stream_key:
+        stream_key = optional_stream_key
+    else:
+        # 2. 否则走自动路由逻辑
+        model_name = task_payload.get("model", "").lower()
+        stream_key = "gemini_stream"  # 默认兜底
 
-    stream_key = "gemini_stream"  # 默认兜底
+        if "qwen" in model_name or "千问" in model_name:
+            stream_key = "qwen_stream"
+        elif "deepseek" in model_name:
+            stream_key = "deepseek_stream"
+        elif "gemini" in model_name:
+            stream_key = "gemini_stream"
+        elif "sd" in model_name or "stable" in model_name:
+            stream_key = "sd_stream"
 
-    if "qwen" in model_name or "千问" in model_name:
-        stream_key = "qwen_stream"
-    elif "deepseek" in model_name:
-        stream_key = "deepseek_stream"
-    elif "gemini" in model_name:
-        stream_key = "gemini_stream"
-    elif "sd" in model_name or "stable" in model_name:
-        stream_key = "sd_stream"
-
-    # 执行投递 (使用传入的 redis_client)
+    # 执行投递
     redis_client.xadd(stream_key, {"payload": json.dumps(task_payload)})
     return stream_key
 
@@ -37,22 +45,25 @@ def _select_target_nodes(
 ) -> List[Optional[str]]:
     """
     根据并发数和节点模型，返回目标节点 URL 列表。
-    例如 concurrency=2 -> 返回 ['http://node1...', 'http://node2...']
-    如果找不到足够节点，位置会填为 None (表示由 Worker 自动路由)
     """
     target_urls = [None] * concurrency  # 默认全是 [None, None]
 
     if node_model and concurrency > 0:
-        # 查询所有健康节点
-        # 优化策略：可以按 current_tasks 升序排列，优先选空闲的
+        # 策略：优先选负载最低的健康节点
         available_nodes = db.query(node_model).filter(
             node_model.status == "HEALTHY"
         ).order_by(node_model.current_tasks.asc()).limit(10).all()
 
         if available_nodes:
-            # 如果节点够多，随机选 unique 的节点；不够就允许重复或填入 None
+            # 随机选择以避免惊群效应，但优先选空闲的
             count_to_pick = min(len(available_nodes), concurrency)
-            selected_nodes = random.sample(available_nodes, count_to_pick)
+            # random.sample 不会重复选择同一个节点（如果节点数够）
+            # 如果你希望允许复用同一个节点（节点数 < 并发数），可以用 random.choices
+            if len(available_nodes) >= count_to_pick:
+                selected_nodes = random.sample(available_nodes, count_to_pick)
+            else:
+                # 节点不够时，允许复用
+                selected_nodes = random.choices(available_nodes, k=count_to_pick)
 
             for i in range(count_to_pick):
                 target_urls[i] = selected_nodes[i].node_url
@@ -70,12 +81,13 @@ def _dispatch_single_task(
         mode: str,
         file_paths: List[str],
         target_node_url: Optional[str] = None,
-        suffix: str = ""
+        suffix: str = "",
+        target_stream: Optional[str] = None  # 👈 新增参数：指定目标 Stream
 ) -> str:
     """
-    创建一个 Task 记录并推送到 Redis
+    创建一个 Task 数据库记录并推送到 Redis
     """
-    # 1. 构造唯一的显示名称 (方便前端区分 Node-1, Node-2)
+    # 1. 构造显示的名称 (例如 "Gemini (#1)")
     display_model_name = base_model_name
     if suffix:
         display_model_name = f"{base_model_name} {suffix}"
@@ -90,7 +102,7 @@ def _dispatch_single_task(
         batch_id=batch_id,
         conversation_id=conversation_id,
         prompt=prompt,
-        model_name=display_model_name,  # 存入数据库的名称
+        model_name=display_model_name,
         status=TaskStatus.PENDING,
         task_type="IMAGE" if mode == "image" else ("MULTIMODAL" if file_paths else "TEXT"),
         file_paths=file_paths
@@ -99,20 +111,23 @@ def _dispatch_single_task(
     db.commit()
     db.refresh(new_task)
 
-    # 3. 组装 Payload (包含 target_node_url)
+    # 3. 组装 Payload
     task_payload = {
         "task_id": new_task.task_id,
         "conversation_id": conversation_id,
         "prompt": worker_prompt,
-        "model": base_model_name,  # 传给 Worker 的真实模型名
+        "model": base_model_name,
         "file_paths": file_paths,
-        "target_node_url": target_node_url  # 👈 关键字段
+        "target_node_url": target_node_url  # 注入指定节点
     }
 
     try:
-        queue = dispatch_to_stream(redis_client, task_payload)
-        node_info = target_node_url or "Auto-Route"
-        debug_log(f" -> [分发] Task: {new_task.task_id} | Node: {node_info}", "INFO")
+        # ✨ 传递 target_stream
+        queue = dispatch_to_stream(redis_client, task_payload, optional_stream_key=target_stream)
+
+        node_info = target_node_url or "Auto"
+        stream_info = target_stream or "Auto"
+        debug_log(f" -> [分发] Task: {new_task.task_id} | Node: {node_info} | Stream: {queue}", "INFO")
     except Exception as e:
         new_task.status = TaskStatus.FAILED
         new_task.error_msg = f"MQ Error: {str(e)}"
@@ -131,7 +146,7 @@ def dispatch_tasks(
         model_config: str,
         mode: str,
         file_paths: List[str],
-        gemini_concurrency: int = 1
+        gemini_concurrency: int = 1  # 👈 接收前端并发参数
 ) -> List[str]:
     model_list = [m.strip() for m in model_config.split(",") if m.strip()]
     if not model_list:
@@ -140,29 +155,39 @@ def dispatch_tasks(
     created_task_ids = []
 
     for model_name in model_list:
-        # 默认配置
         concurrency = 1
         node_model = None
+        is_gemini_concurrent = False
 
-        # ✨ 2. 针对 Gemini 启用动态并发
+        # === Gemini 特殊处理逻辑 ===
         if "gemini" in model_name.lower():
-            # 这里的逻辑对应前端的 "x2" 开关
-            # 限制最小 1，最大 2 (防止以后前端传错或者被滥用)
+            # 限制并发范围 [1, 2]
             concurrency = min(max(gemini_concurrency, 1), 2)
             node_model = GeminiServiceNode
+            if concurrency > 1:
+                is_gemini_concurrent = True
 
-        # (未来扩展)
-        # elif "deepseek" in model_name: ...
-
-        # 3. 获取目标节点 (如果并发是1，这里就是 [None] 或 [url])
+        # 1. 选出 N 个节点
         target_urls = _select_target_nodes(db, concurrency, node_model)
 
-        # 4. 循环分发
+        # 2. 循环分发任务
         for i, target_url in enumerate(target_urls):
-            # ✨ 3. 后缀优化：只有在开启并发时才显示 (#1, #2)
-            # 如果 concurrency == 1，suffix 为空，用户看到的还是纯净的 "Gemini 2.5 Flash"
-            suffix = f"(#{i + 1})" if concurrency > 1 else ""
+            suffix = ""
+            target_stream = None
 
+            if "gemini" in model_name.lower():
+                if is_gemini_concurrent:
+                    # ✅ 双路并发模式：强制分流
+                    # i=0 -> suffix="(#1)" -> stream="gemini_stream_1"
+                    # i=1 -> suffix="(#2)" -> stream="gemini_stream_2"
+                    suffix = f"(#{i + 1})"
+                    target_stream = f"gemini_stream_{i + 1}"
+                else:
+                    # ✅ 单路模式：默认发给 Worker 1 (监听 gemini_stream_1)
+                    # 这样就不需要有一个 Worker 专门监听旧的 gemini_stream 了
+                    target_stream = "gemini_stream_1"
+
+            # 3. 创建并发送
             task_id = _dispatch_single_task(
                 db=db,
                 redis_client=redis_client,
@@ -173,7 +198,8 @@ def dispatch_tasks(
                 mode=mode,
                 file_paths=file_paths,
                 target_node_url=target_url,
-                suffix=suffix
+                suffix=suffix,
+                target_stream=target_stream  # 👈 传入计算好的 Stream Key
             )
             created_task_ids.append(task_id)
 
