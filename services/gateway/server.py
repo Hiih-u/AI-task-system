@@ -126,6 +126,7 @@ def create_chat_task(
     model: str = Form("gemini-2.5-flash"),
     conversation_id: Optional[str] = Form(None),
     files: List[UploadFile] = File(None),  # ✨ 接收文件
+    mode: str = Form("text"),
     db: Session = Depends(get_db)
 ):
     """
@@ -183,8 +184,8 @@ def create_chat_task(
                 prompt=prompt,
                 model_name=model_name,
                 status=TaskStatus.PENDING,
-                task_type="MULTIMODAL" if saved_file_paths else "TEXT",  # 标记类型
-                file_paths=saved_file_paths  # ✨ 存入数据库
+                task_type="IMAGE" if mode == "image" else ("MULTIMODAL" if saved_file_paths else "TEXT"),  # 可选：优化类型标记
+                file_paths=saved_file_paths
             )
             db.add(new_task)
             # 这里的 commit 是为了让 task_id 生效，也可以批量 commit 优化性能
@@ -192,12 +193,16 @@ def create_chat_task(
             db.refresh(new_task)
             created_tasks.append(new_task)
 
+            worker_prompt = new_task.prompt
+            if mode == "image":
+                worker_prompt = "你作为 AI 图像生成引擎，需在响应中直接输出生成的图片\n" + new_task.prompt
+
             # B. 组装 Payload (发给 Worker 的数据)
             # Worker 不需要知道 Batch 的存在，它只认 task_id 和 conversation_id
             task_payload = {
                 "task_id": new_task.task_id,
                 "conversation_id": conversation.conversation_id,
-                "prompt": new_task.prompt,
+                "prompt": worker_prompt,
                 "model": new_task.model_name,
                 "file_paths": saved_file_paths  # ✨ 传给 Worker
             }

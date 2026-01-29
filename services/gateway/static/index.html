@@ -235,17 +235,12 @@
             const loadingId = addMessage('assistant', '<div class="typing-indicator flex gap-1"><span>●</span><span>●</span><span>●</span></div>', true);
 
             try {
-                //判断模式并拼接提示词
-                let finalPrompt = message;
 
-                // 如果当前选中的是 'image' (对应 option value="image")
-                if (currentMode === 'image') {
-                    // 拼接前缀
-                    finalPrompt = "你作为 AI 图像生成引擎，需在响应中直接输出生成的图片\n" + message;
-                }
                 const formData = new FormData();
-                formData.append('prompt', finalPrompt);
+                formData.append('prompt', message);
                 formData.append('model', modelConfig);
+                formData.append('mode', currentMode);
+
                 if (currentConversationId) formData.append('conversation_id', currentConversationId);
 
                 // 追加文件
