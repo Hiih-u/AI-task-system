@@ -39,7 +39,7 @@ def get_database_target_url(db, conversation_id, slot_id=0):
         if conversation_id:
             conv = db.query(models.Conversation).filter(
                 models.Conversation.conversation_id == conversation_id
-            ).first()
+            ).with_for_update().first()
 
             if conv and conv.session_metadata:
                 last_node_url = conv.session_metadata.get("assigned_node_url")
@@ -50,9 +50,6 @@ def get_database_target_url(db, conversation_id, slot_id=0):
                     slots = conv.session_metadata.get("node_slots", {})
                     last_node_url = slots.get(str(slot_id))  # JSON key 通常是字符串
 
-                    # 兼容旧数据：如果没有 slots，回退读取旧字段
-                    if not last_node_url:
-                        last_node_url = conv.session_metadata.get("assigned_node_url")
 
                     # 检查节点是否存活且空闲
                     if last_node_url and last_node_url in healthy_map:
