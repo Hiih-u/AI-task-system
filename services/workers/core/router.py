@@ -42,21 +42,19 @@ def get_database_target_url(db, conversation_id, slot_id=0):
             ).with_for_update().first()
 
             if conv and conv.session_metadata:
-                last_node_url = conv.session_metadata.get("assigned_node_url")
+                slots = conv.session_metadata.get("node_slots", {})
+                last_node_url = slots.get(str(slot_id))
 
-                # 如果上次分配的节点现在还活着，就继续用它
+                # 检查节点状态：是否存在 + 存活 + 真正空闲
                 if last_node_url and last_node_url in healthy_map:
-                    # 尝试从 node_slots 里读取当前 slot_id 对应的 url
-                    slots = conv.session_metadata.get("node_slots", {})
-                    last_node_url = slots.get(str(slot_id))  # JSON key 通常是字符串
+                    candidate = healthy_map[last_node_url]
 
-
-                    # 检查节点是否存活且空闲
-                    if last_node_url and last_node_url in healthy_map:
-                        candidate = healthy_map[last_node_url]
-                        if candidate.dispatched_tasks == 0 and candidate.current_tasks == 0:
-                            target_url = last_node_url
-                            debug_log(f"🔗 [槽位 {slot_id}] 复用节点: {target_url}", "INFO")
+                    # 只有当它既没被预订，也没在干活时，才复用
+                    if candidate.dispatched_tasks == 0 and candidate.current_tasks == 0:
+                        target_url = last_node_url
+                        debug_log(f"🔗 [槽位 {slot_id}] 复用节点: {target_url}", "INFO")
+                    else:
+                        debug_log(f"⚠️ [槽位 {slot_id}] 节点 {last_node_url} 忙，将重新分配", "INFO")
 
 
         # 4. 负载均衡 (随机选择)
