@@ -3,6 +3,9 @@ from sqlalchemy import Column, String, DateTime, Text, ForeignKey, JSON, Float, 
 from sqlalchemy.orm import relationship
 import uuid
 from datetime import datetime
+
+from sqlalchemy.sql.functions import func
+
 from common.database import Base
 from enum import IntEnum
 
@@ -35,6 +38,19 @@ class Conversation(Base):
     # 关系：一个会话包含多个“批次”（一次提问算一个批次）
     batches = relationship("ChatBatch", back_populates="conversation")
 
+
+class ConversationRoute(Base):
+    __tablename__ = "conversation_routes"
+
+    # 联合主键：(conversation_id, slot_id) 唯一确定一条记录
+    conversation_id = Column(String, primary_key=True, index=True)
+    slot_id = Column(Integer, primary_key=True)  # 0 或 1
+
+    node_url = Column(String, nullable=False)  # http://...:8001
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now())
+
+    def __repr__(self):
+        return f"<Route(conv={self.conversation_id}, slot={self.slot_id}, node={self.node_url})>"
 
 class ChatBatch(Base):
     __tablename__ = "chat_batches"

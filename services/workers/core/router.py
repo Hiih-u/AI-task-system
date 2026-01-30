@@ -1,86 +1,84 @@
 import random
 from datetime import datetime, timedelta
-
-from common import models
 from common.logger import debug_log
+from common.models import ConversationRoute, GeminiServiceNode
+
 
 def get_database_target_url(db, conversation_id, slot_id=0):
     """
-    🎯 基于数据库的服务发现逻辑
-    1. 查找所有 status='HEALTHY' 且 last_heartbeat 在 30s 内的节点
-    2. 实现会话粘性 (Sticky Session)
+    🎯 基于数据库的服务发现逻辑 (分离存储版)
+    直接读写 ConversationRoute 表，彻底解决 JSON 覆盖问题。
     """
     try:
-        # 1. 定义存活判定时间 (30秒没心跳视为掉线)
+        # 1. 查活跃节点 (保持不变)
         alive_threshold = datetime.now() - timedelta(seconds=30)
-
-        # 2. 查询所有活跃节点
-        # 注意：这里我们过滤掉了状态为 '429_LIMIT' 或 'OFFLINE' 的节点
-        active_nodes = db.query(models.GeminiServiceNode).filter(
-            models.GeminiServiceNode.last_heartbeat > alive_threshold,
-            models.GeminiServiceNode.status == "HEALTHY",
-            models.GeminiServiceNode.dispatched_tasks == 0,
-            models.GeminiServiceNode.current_tasks == 0
+        active_nodes = db.query(GeminiServiceNode).filter(
+            GeminiServiceNode.last_heartbeat > alive_threshold,
+            GeminiServiceNode.status == "HEALTHY",
+            GeminiServiceNode.dispatched_tasks == 0,
+            GeminiServiceNode.current_tasks == 0
         ).all()
 
         if not active_nodes:
-            debug_log("❌ 数据库中没有可用的健康节点 (无心跳或全被熔断)", "ERROR")
+            debug_log("❌ 无可用健康节点", "ERROR")
             return None, False
 
-        # 构建 URL 映射表 {url: node_obj}
         healthy_map = {node.node_url: node for node in active_nodes}
-
         target_url = None
-        chosen_node = None
-        last_node_url = None
 
-        # 3. 会话粘性逻辑 (优先复用旧节点)
-        conv = None
+        # =========================================================
+        # 🔥 2. 会话粘性 (直接查 ConversationRoute 表)
+        # =========================================================
+        route_record = None
         if conversation_id:
-            conv = db.query(models.Conversation).filter(
-                models.Conversation.conversation_id == conversation_id
-            ).with_for_update().first()
+            # 只查自己槽位的那一行，绝对不会读到别人的 Slot 数据！
+            route_record = db.query(ConversationRoute).get((conversation_id, slot_id))
 
-            if conv and conv.session_metadata:
-                slots = conv.session_metadata.get("node_slots", {})
-                last_node_url = slots.get(str(slot_id))
+            if route_record:
+                last_node_url = route_record.node_url
 
-                # 检查节点状态：是否存在 + 存活 + 真正空闲
+                # 检查节点是否存活且空闲
                 if last_node_url and last_node_url in healthy_map:
                     candidate = healthy_map[last_node_url]
-
-                    # 只有当它既没被预订，也没在干活时，才复用
                     if candidate.dispatched_tasks == 0 and candidate.current_tasks == 0:
                         target_url = last_node_url
                         debug_log(f"🔗 [槽位 {slot_id}] 复用节点: {target_url}", "INFO")
-                    else:
-                        debug_log(f"⚠️ [槽位 {slot_id}] 节点 {last_node_url} 忙，将重新分配", "INFO")
 
-
-        # 4. 负载均衡 (随机选择)
+        # =========================================================
+        # 🔥 3. 负载均衡 & 保存 (直接写 ConversationRoute 表)
+        # =========================================================
         if not target_url:
             chosen_node = random.choice(active_nodes)
             target_url = chosen_node.node_url
             debug_log(f"🎲 [槽位 {slot_id}] 新分配: {target_url}", "INFO")
 
-            if conv:
-                new_meta = dict(conv.session_metadata) if conv.session_metadata else {}
+            if conversation_id:
+                if route_record:
+                    # 如果记录存在，更新它
+                    route_record.node_url = target_url
+                    # db.add(route_record) # 对象在 session 里，会自动 commit
+                else:
+                    # 如果记录不存在，创建新行
+                    new_route = ConversationRoute(
+                        conversation_id=conversation_id,
+                        slot_id=slot_id,
+                        node_url=target_url
+                    )
+                    db.add(new_route)
 
-                # 初始化 slots 结构
-                if "node_slots" not in new_meta:
-                    new_meta["node_slots"] = {}
+                # 注意：这里我们不立即 commit，而是交给外层 node_manager 统一 commit
+                # 这样可以保证 节点锁定 + 路由保存 是一个原子操作
 
-                # 更新当前槽位的绑定关系
-                new_meta["node_slots"][str(slot_id)] = target_url
+        # 判断是否变更
+        is_node_changed = False
+        if route_record and route_record.node_url != target_url:
+            is_node_changed = True
+        elif not route_record:
+            is_node_changed = False  # 第一次不算变更，或者你可以算 True
 
-                # 赋值回对象触发更新
-                conv.session_metadata = new_meta
-                db.add(conv)
-
-        is_node_changed = (last_node_url != target_url)
         final_url = f"{target_url}/v1/chat/completions"
         return final_url, is_node_changed
 
     except Exception as e:
-        debug_log(f"❌ 数据库路由异常: {e}", "ERROR")
+        debug_log(f"❌ 路由异常: {e}", "ERROR")
         return None, False
