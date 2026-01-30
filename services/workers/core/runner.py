@@ -2,6 +2,7 @@ import time
 import requests
 from requests.exceptions import RequestException, Timeout, ConnectTimeout
 from common import database
+from common.logger import debug_log
 from . import (
     parse_and_validate,
     claim_task,
