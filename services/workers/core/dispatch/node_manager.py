@@ -5,8 +5,8 @@ import random
 from sqlalchemy import update
 from common.models import GeminiServiceNode
 from common.logger import debug_log
-from services.workers.core.router import get_database_target_url
-from services.workers.core.task_state import update_node_load
+from services.workers.core.dispatch.router import get_database_target_url
+from services.workers.core.data.task_state import update_node_load
 
 
 def atomic_claim_node(db, full_api_url):

@@ -2,18 +2,16 @@ import time
 import requests
 from requests.exceptions import RequestException, Timeout, ConnectTimeout
 
-from common import database
-from common.logger import debug_log
-from services.workers.core import (
+from . import (
     parse_and_validate,
     claim_task,
     mark_task_failed,
     upload_files_to_downstream,
     build_conversation_context,
-    process_ai_result
+    process_ai_result,
+    acquire_node_with_retry,
+    release_node_safe
 )
-from services.workers.core.node_manager import acquire_node_with_retry, release_node_safe
-
 
 def run_chat_task(
         redis_client,
