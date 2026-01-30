@@ -403,7 +403,7 @@
                             if(lastMsg) lastMsg.id = `res-${task.task_id}`;
                         }
                         else if (task.status === 2) { // ❌ 失败处理
-                            const errorContent = `**⚠️ 任务失败 (${task.model_name})**\n\n${task.response_text || '生成被拦截或发生错误'}`;
+                            const errorContent = `**⚠️ 任务失败 (${task.model_name})**\n\n${task.response_text || '系统繁忙，请稍后再试'}`;
                             addMessage('error', errorContent);
                             const lastMsg = document.getElementById('messagesContainer').lastElementChild;
                             if(lastMsg) lastMsg.id = `res-${task.task_id}`;
