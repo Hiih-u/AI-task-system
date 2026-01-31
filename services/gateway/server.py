@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import threading
 import uuid
 
 import redis
@@ -19,6 +20,7 @@ from common.logger import debug_log
 from services.gateway.core.conversation import init_batch
 from services.gateway.core.dispatch import dispatch_tasks
 from services.gateway.core.file import save_uploaded_files
+from services.gateway.core.node_manager import start_heartbeat_monitor
 
 app = FastAPI(title="AI Task Gateway", version="2.0.0")
 
@@ -238,6 +240,12 @@ def list_conversations(limit: int = 20, db: Session = Depends(get_db)):
         ]
     }
 
+@app.on_event("startup")
+async def startup_event():
+    # 启动守护线程 (Daemon Thread)，主程序退出时它也会自动退出
+    monitor_thread = threading.Thread(target=start_heartbeat_monitor, daemon=True)
+    monitor_thread.start()
+    debug_log("💓 后台心跳监控线程已启动", "INFO")
 
 if __name__ == "__main__":
     import uvicorn
